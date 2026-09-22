@@ -225,7 +225,7 @@ with col_b:
 
     st.success("Muestra PDF lista para conectar con un modelo multimodal.")
 
-st.subheader("3. Ejecutar Ruta A · Jev")
+st.subheader("3. Prueba 1 · Ruta A con Jev")
 
 if not jev_configurado():
     st.error(
@@ -332,31 +332,82 @@ if "resultados_jev" in st.session_state:
                     f"{item['probabilidad'] * 100:.2f}%"
                 )
 
-st.subheader("3. Resultado comparativo")
+st.subheader("4. Resultado comparativo · Prueba 1")
+
+comparativo = muestra_sel[
+    ["Documento", "Concepto real"]
+].copy()
+
+if "resultados_jev" in st.session_state:
+    resultados_jev = st.session_state["resultados_jev"]
+
+    columnas_a = resultados_jev[
+        [
+            "Documento",
+            "Resultado Ruta A",
+            "Confianza A",
+            "Acierto A",
+            "Costo A (USD)",
+            "Tiempo A (s)",
+        ]
+    ].copy()
+
+    comparativo = comparativo.merge(
+        columnas_a,
+        on="Documento",
+        how="left",
+    )
+else:
+    comparativo["Resultado Ruta A"] = "Pendiente"
+    comparativo["Confianza A"] = None
+    comparativo["Acierto A"] = None
+    comparativo["Costo A (USD)"] = None
+    comparativo["Tiempo A (s)"] = None
+
+comparativo["Resultado Ruta B"] = "Pendiente"
+comparativo["Confianza B"] = None
+comparativo["Acierto B"] = None
+comparativo["Costo B (USD)"] = None
+comparativo["Tiempo B (s)"] = None
 
 st.dataframe(
-    muestra_sel.assign(
-        **{
-            "Resultado Ruta A": "Pendiente",
-            "Confianza A": None,
-            "Resultado Ruta B": "Pendiente",
-            "Confianza B": None,
-        }
-    )[
+    comparativo[
         [
             "Documento",
             "Concepto real",
             "Resultado Ruta A",
             "Confianza A",
+            "Acierto A",
             "Resultado Ruta B",
             "Confianza B",
+            "Acierto B",
         ]
     ],
     use_container_width=True,
     hide_index=True,
+    column_config={
+        "Confianza A": st.column_config.NumberColumn(
+            "Confianza A",
+            format="%.2f %%",
+        ),
+        "Confianza B": st.column_config.NumberColumn(
+            "Confianza B",
+            format="%.2f %%",
+        ),
+    },
 )
 
+if "resultados_jev" in st.session_state:
+    st.success(
+        "Prueba 1 · Ruta A registrada. Los resultados de Jev se conservan "
+        "en Google Drive y se usarán como línea base para comparar la Ruta B."
+    )
+else:
+    st.caption(
+        "La Ruta A aún no se ha ejecutado para esta muestra."
+    )
+
 st.caption(
-    "En este paso todavía no se envía información a Jev, OpenAI ni Gemini. "
-    "Solo dejamos lista y validable la muestra que ambos métodos usarán."
+    "La Ruta B permanece pendiente. Cuando se ejecute el modelo multimodal, "
+    "esta misma tabla mostrará ambos resultados lado a lado."
 )
