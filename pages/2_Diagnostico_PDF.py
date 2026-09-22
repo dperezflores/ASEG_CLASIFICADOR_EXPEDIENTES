@@ -1,5 +1,9 @@
 import streamlit as st
 
+from services.drive_persistence_service import (
+    DrivePersistenceError,
+    guardar_diagnostico,
+)
 from services.pdf_service import analizar_pdfs_zip
 from ui.common import (
     mostrar_encabezado,
@@ -26,10 +30,22 @@ if "analisis_pdf" not in st.session_state:
         ):
             try:
                 analisis_pdf, resumen_pdf = analizar_pdfs_zip(contenido_zip)
+
+                if "drive_folder_id" in st.session_state:
+                    guardar_diagnostico(
+                        st.session_state["drive_folder_id"],
+                        analisis_pdf,
+                        resumen_pdf,
+                    )
+
                 st.session_state["analisis_pdf"] = analisis_pdf
                 st.session_state["resumen_pdf"] = resumen_pdf
+                st.success(
+                    "Diagnóstico terminado y guardado en Google Drive."
+                )
                 st.rerun()
-            except ValueError as error:
+
+            except (ValueError, DrivePersistenceError) as error:
                 st.error(str(error))
 else:
     analisis_pdf = st.session_state["analisis_pdf"]
@@ -39,6 +55,7 @@ else:
         f"Diagnóstico disponible: {resumen_pdf['pdfs']} PDF y "
         f"{resumen_pdf['paginas']} páginas revisadas."
     )
+    st.caption("Persistencia en Google Drive: guardado ✓")
 
     if resumen_pdf["estados"]:
         columnas = st.columns(len(resumen_pdf["estados"]))
