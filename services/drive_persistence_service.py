@@ -527,3 +527,29 @@ def cargar_expediente(folder_id: str) -> dict:
         raise DrivePersistenceError(
             f"No fue posible restaurar el expediente: {error}"
         ) from error
+
+
+
+def guardar_clasificacion_jev(
+    folder_id: str,
+    resultados: pd.DataFrame,
+) -> None:
+    try:
+        servicio = _servicio_drive()
+        serializable = resultados.copy()
+        if "Top 3" in serializable.columns:
+            serializable["Top 3"] = serializable["Top 3"].apply(
+                lambda valor: json.dumps(valor, ensure_ascii=False)
+            )
+
+        _subir_o_actualizar(
+            servicio,
+            folder_id,
+            "clasificacion_jev.csv",
+            _df_csv_bytes(serializable),
+            "text/csv",
+        )
+    except Exception as error:
+        raise DrivePersistenceError(
+            f"No fue posible guardar la clasificación de Jev en Drive: {error}"
+        ) from error
