@@ -30,6 +30,8 @@ CLAVES_EXPEDIENTE = (
     "resumen_pdf",
     "resultado_ocr",
     "ground_truth_manual",
+    "resultados_jev",
+    "resultados_multimodal",
 )
 
 
@@ -53,6 +55,8 @@ def _restaurar_en_sesion(datos: dict):
         "resumen_pdf",
         "resultado_ocr",
         "ground_truth_manual",
+        "resultados_jev",
+        "resultados_multimodal",
     )
 
     for clave in claves:
