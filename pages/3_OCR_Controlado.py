@@ -1,5 +1,9 @@
 import streamlit as st
 
+from services.drive_persistence_service import (
+    DrivePersistenceError,
+    guardar_ocr,
+)
 from services.ocr_service import ejecutar_ocr_controlado
 from ui.common import (
     mostrar_encabezado,
@@ -38,6 +42,7 @@ if "resultado_ocr" in st.session_state:
     st.success(
         f"Resultado OCR disponible: {len(resultado_ocr)} páginas procesadas."
     )
+    st.caption("Persistencia en Google Drive: guardado ✓")
 
     st.dataframe(
         resultado_ocr[
@@ -68,7 +73,7 @@ if "resultado_ocr" in st.session_state:
         )
 
         with st.expander(titulo):
-            texto = fila["Texto OCR"].strip()
+            texto = str(fila["Texto OCR"]).strip()
             if texto:
                 st.text_area(
                     "Texto OCR",
@@ -119,7 +124,16 @@ else:
                     seleccion_ocr,
                     max_paginas,
                 )
+
+                if "drive_folder_id" in st.session_state:
+                    guardar_ocr(
+                        st.session_state["drive_folder_id"],
+                        resultado_ocr,
+                    )
+
                 st.session_state["resultado_ocr"] = resultado_ocr
+                st.success("OCR terminado y guardado en Google Drive.")
                 st.rerun()
-            except ValueError as error:
+
+            except (ValueError, DrivePersistenceError) as error:
                 st.error(str(error))
