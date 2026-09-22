@@ -5,10 +5,8 @@ from services.catalog_service import cargar_catalogo, obtener_hojas_catalogo
 from services.expediente_service import formatear_tamano, inventariar_expediente_zip
 from ui.common import (
     PROCEDIMIENTOS,
-    configurar_pagina,
     expediente_activo,
     mostrar_encabezado,
-    mostrar_sidebar_expediente,
 )
 
 
