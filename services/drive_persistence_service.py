@@ -542,9 +542,20 @@ def cargar_expediente(folder_id: str) -> dict:
             "clasificacion_multimodal.csv",
         )
         if multimodal_raw:
-            resultado["resultados_multimodal"] = pd.read_csv(
+            multimodal_df = pd.read_csv(
                 io.BytesIO(multimodal_raw)
             )
+            if "Confianza B" in multimodal_df.columns:
+                confianza_b = pd.to_numeric(
+                    multimodal_df["Confianza B"],
+                    errors="coerce",
+                )
+                if (
+                    confianza_b.notna().any()
+                    and confianza_b.max() <= 1
+                ):
+                    multimodal_df["Confianza B"] = confianza_b * 100
+            resultado["resultados_multimodal"] = multimodal_df
 
         return resultado
 
