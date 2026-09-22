@@ -1,9 +1,7 @@
 import streamlit as st
 
 from services.catalog_service import cargar_catalogo
-from services.drive_persistence_service import DrivePersistenceError, guardar_ground_truth
-from services.evaluation_service import preparar_muestra_ocr
-from ui.common import mostrar_encabezado, requerir_expediente
+from services.drive_persistence_service import (\n    DrivePersistenceError,\n    guardar_clasificacion_jev,\n    guardar_ground_truth,\n)\nfrom services.evaluation_service import preparar_muestra_ocr\nfrom services.jev_classifier_service import (\n    JevError,\n    clasificar_muestra_con_jev,\n    jev_configurado,\n    probar_conexion_jev,\n)\nfrom ui.common import mostrar_encabezado, requerir_expediente
 
 
 mostrar_encabezado(
@@ -214,6 +212,113 @@ with col_b:
     )
 
     st.success("Muestra PDF lista para conectar con un modelo multimodal.")
+
+st.subheader("3. Ejecutar Ruta A · Jev")
+
+if not jev_configurado():
+    st.error(
+        "No se encontró la API key de TypeSafe en Streamlit Secrets."
+    )
+else:
+    col_test, col_run = st.columns([1, 2])
+
+    with col_test:
+        if st.button("Probar conexión con Jev"):
+            try:
+                modelos = probar_conexion_jev()
+                st.success("Conexión con TypeSafe correcta.")
+                if modelos:
+                    st.caption("Modelos disponibles: " + ", ".join(modelos))
+            except JevError as error:
+                st.error(str(error))
+
+    with col_run:
+        if st.button(
+            "Clasificar muestra con Jev",
+            type="primary",
+            disabled=not referencias_completas or muestra_sel.empty,
+        ):
+            with st.spinner(
+                "Jev está clasificando los documentos usando únicamente "
+                "el texto OCR y el catálogo activo..."
+            ):
+                try:
+                    resultados_jev = clasificar_muestra_con_jev(
+                        muestra_sel,
+                        catalogo,
+                    )
+                    st.session_state["resultados_jev"] = resultados_jev
+
+                    if "drive_folder_id" in st.session_state:
+                        guardar_clasificacion_jev(
+                            st.session_state["drive_folder_id"],
+                            resultados_jev,
+                        )
+
+                    st.success(
+                        "Ruta A terminada y guardada en Google Drive."
+                    )
+                    st.rerun()
+                except (JevError, DrivePersistenceError) as error:
+                    st.error(str(error))
+
+if "resultados_jev" in st.session_state:
+    resultados_jev = st.session_state["resultados_jev"]
+
+    st.dataframe(
+        resultados_jev[
+            [
+                "Documento",
+                "Concepto real",
+                "Resultado Ruta A",
+                "Confianza A",
+                "Probabilidad elegida (%)",
+                "Acierto A",
+                "Tokens entrada A",
+                "Costo A (USD)",
+                "Tiempo A (s)",
+            ]
+        ],
+        use_container_width=True,
+        hide_index=True,
+        column_config={
+            "Confianza A": st.column_config.NumberColumn(
+                "Confianza A",
+                format="%.2f %%",
+            ),
+            "Probabilidad elegida (%)": st.column_config.NumberColumn(
+                "Probabilidad elegida (%)",
+                format="%.2f %%",
+            ),
+            "Costo A (USD)": st.column_config.NumberColumn(
+                "Costo A (USD)",
+                format="$%.8f",
+            ),
+            "Tiempo A (s)": st.column_config.NumberColumn(
+                "Tiempo A (s)",
+                format="%.3f",
+            ),
+        },
+    )
+
+    aciertos = int(resultados_jev["Acierto A"].sum())
+    total = len(resultados_jev)
+    costo_total = float(resultados_jev["Costo A (USD)"].sum())
+    tiempo_total = float(resultados_jev["Tiempo A (s)"].sum())
+
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Aciertos Ruta A", f"{aciertos}/{total}")
+    c2.metric("Costo estimado", f"$ {costo_total:.8f}")
+    c3.metric("Tiempo total", f"{tiempo_total:.3f} s")
+
+    with st.expander("Ver probabilidades principales de Jev"):
+        for _, fila in resultados_jev.iterrows():
+            st.markdown(f"**{fila['Documento']}**")
+            for item in fila["Top 3"]:
+                st.write(
+                    f"- {item['concepto']}: "
+                    f"{item['probabilidad'] * 100:.2f}%"
+                )
 
 st.subheader("3. Resultado comparativo")
 
