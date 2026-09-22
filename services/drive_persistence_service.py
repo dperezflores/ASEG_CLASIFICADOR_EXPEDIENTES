@@ -567,6 +567,16 @@ def cargar_expediente(folder_id: str) -> dict:
                 io.BytesIO(hibrido_raw)
             )
 
+        propuesta_raw = _leer_archivo_por_nombre(
+            servicio,
+            folder_id,
+            "propuesta_clasificacion.csv",
+        )
+        if propuesta_raw:
+            resultado["propuesta_clasificacion"] = pd.read_csv(
+                io.BytesIO(propuesta_raw)
+            )
+
         return resultado
 
     except DrivePersistenceError:
@@ -641,5 +651,26 @@ def guardar_clasificacion_hibrida(
     except Exception as error:
         raise DrivePersistenceError(
             "No fue posible guardar la clasificación híbrida en Drive: "
+            f"{error}"
+        ) from error
+
+
+
+def guardar_propuesta_clasificacion(
+    folder_id: str,
+    propuesta: pd.DataFrame,
+) -> None:
+    try:
+        servicio = _servicio_drive()
+        _subir_o_actualizar(
+            servicio,
+            folder_id,
+            "propuesta_clasificacion.csv",
+            _df_csv_bytes(propuesta),
+            "text/csv",
+        )
+    except Exception as error:
+        raise DrivePersistenceError(
+            "No fue posible guardar la propuesta de clasificación en Drive: "
             f"{error}"
         ) from error
