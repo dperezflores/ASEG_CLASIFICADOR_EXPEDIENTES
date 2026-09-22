@@ -4,3 +4,4 @@ openpyxl
 PyMuPDF
 numpy
 rapidocr-onnxruntime
+opencv-python-headless
