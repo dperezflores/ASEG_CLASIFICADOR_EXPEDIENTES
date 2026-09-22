@@ -6,8 +6,6 @@ from ui.common import (
 )
 
 
-configurar_pagina("Clasificación IA")
-mostrar_sidebar_expediente()
 mostrar_encabezado(
     "Clasificación IA",
     "Comparativa experimental: OCR + clasificador frente a IA multimodal",
