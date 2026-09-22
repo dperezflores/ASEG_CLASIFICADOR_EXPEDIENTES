@@ -63,15 +63,23 @@ st.info(
 
 st.subheader("1. Seleccionar muestra")
 
-opciones = muestra["Documento"].tolist()
+mapa_opciones = {
+    fila["Documento"]: (
+        f"{fila['Documento']} · {fila['Archivo real']}"
+    )
+    for _, fila in muestra.iterrows()
+}
+opciones = list(mapa_opciones.keys())
 
 seleccion = st.multiselect(
     "Selecciona entre 1 y 30 documentos",
     options=opciones,
     max_selections=30,
+    format_func=lambda documento: mapa_opciones[documento],
     help=(
-        "Los modelos solo reciben el alias documento_XXX. "
-        "No reciben el nombre real ni la carpeta."
+        "En la interfaz ves el nombre real para poder elegir la muestra. "
+        "Los modelos reciben únicamente el alias documento_XXX; "
+        "no reciben el nombre real ni la carpeta."
     ),
 )
 
