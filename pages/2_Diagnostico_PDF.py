@@ -2,9 +2,7 @@ import streamlit as st
 
 from services.pdf_service import analizar_pdfs_zip
 from ui.common import (
-    configurar_pagina,
     mostrar_encabezado,
-    mostrar_sidebar_expediente,
     requerir_expediente,
 )
 
