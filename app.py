@@ -41,6 +41,11 @@ paginas = {
             title="Clasificación híbrida",
             icon="⚡",
         ),
+        st.Page(
+            "pages/6_Resultado_Clasificacion.py",
+            title="Resultado clasificación",
+            icon="✅",
+        ),
     ],
 }
 
