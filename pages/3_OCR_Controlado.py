@@ -7,8 +7,6 @@ from ui.common import (
 )
 
 
-configurar_pagina("OCR controlado")
-mostrar_sidebar_expediente()
 mostrar_encabezado(
     "OCR controlado",
     "Prueba de recuperación de texto sobre una muestra de documentos",
