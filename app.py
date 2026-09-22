@@ -5,6 +5,7 @@ import streamlit as st
 from config.constants import APP_NAME, APP_SUBTITLE, CARPETAS_IGNORADAS
 from services.catalog_service import cargar_catalogo, obtener_hojas_catalogo
 from services.expediente_service import formatear_tamano, inventariar_expediente_zip
+from services.ocr_service import ejecutar_ocr_controlado
 from services.pdf_service import analizar_pdfs_zip
 
 
@@ -33,8 +34,8 @@ st.markdown(
 )
 
 st.info(
-    "Etapa actual: inventariar el expediente y determinar qué PDF tienen "
-    "texto extraíble y cuáles requerirán OCR."
+    "Etapa actual: inventariar el expediente, diagnosticar PDF y probar "
+    "OCR de forma controlada sobre una muestra pequeña."
 )
 
 st.subheader("1. Configuración del expediente")
@@ -91,6 +92,7 @@ if archivo_zip is not None:
         st.session_state["expediente_id"] = expediente_id
         st.session_state.pop("analisis_pdf", None)
         st.session_state.pop("resumen_pdf", None)
+        st.session_state.pop("resultado_ocr", None)
 
     try:
         inventario, resumen = inventariar_expediente_zip(contenido_zip)
@@ -200,6 +202,124 @@ if archivo_zip is not None:
             "suficiente. Mixto: solo parte de las páginas contiene texto. "
             "Requiere OCR: no se detectó texto extraíble."
         )
+
+        st.subheader("4. OCR controlado")
+
+        candidatos_ocr = analisis_pdf[
+            analisis_pdf["Estado PDF"].isin(
+                ["Requiere OCR", "Mixto"]
+            )
+        ].copy()
+
+        if candidatos_ocr.empty:
+            st.info("No hay PDF pendientes de OCR.")
+        else:
+            opciones_ocr = candidatos_ocr["Ruta original"].tolist()
+
+            seleccion_ocr = st.multiselect(
+                "Selecciona hasta 5 PDF para la prueba",
+                options=opciones_ocr,
+                max_selections=5,
+                help=(
+                    "Para esta etapa procesamos una muestra pequeña. "
+                    "Elige documentos distintos para comparar la calidad."
+                ),
+            )
+
+            max_paginas = st.slider(
+                "Páginas a procesar por PDF",
+                min_value=1,
+                max_value=5,
+                value=2,
+                help=(
+                    "Solo se procesan las primeras páginas de cada PDF "
+                    "seleccionado."
+                ),
+            )
+
+            st.caption(
+                "Motor de prueba: RapidOCR. Las páginas se renderizan a "
+                "180 DPI y el OCR se ejecuta localmente en Streamlit."
+            )
+
+            if st.button(
+                "Ejecutar OCR controlado",
+                disabled=not seleccion_ocr,
+            ):
+                with st.spinner(
+                    "Ejecutando OCR sobre la muestra seleccionada..."
+                ):
+                    try:
+                        resultado_ocr = ejecutar_ocr_controlado(
+                            contenido_zip,
+                            seleccion_ocr,
+                            max_paginas,
+                        )
+                        st.session_state["resultado_ocr"] = resultado_ocr
+                    except ValueError as error:
+                        st.error(str(error))
+
+            if "resultado_ocr" in st.session_state:
+                resultado_ocr = st.session_state["resultado_ocr"]
+
+                if resultado_ocr.empty:
+                    st.warning("El OCR no generó resultados.")
+                else:
+                    st.success(
+                        f"OCR terminado: {len(resultado_ocr)} páginas "
+                        "procesadas."
+                    )
+
+                    st.dataframe(
+                        resultado_ocr[
+                            [
+                                "Archivo",
+                                "Página",
+                                "Caracteres OCR",
+                                "Confianza media (%)",
+                                "Estado OCR",
+                            ]
+                        ],
+                        use_container_width=True,
+                        hide_index=True,
+                        column_config={
+                            "Confianza media (%)": (
+                                st.column_config.NumberColumn(
+                                    "Confianza media (%)",
+                                    format="%.1f %%",
+                                )
+                            )
+                        },
+                    )
+
+                    st.subheader("Texto recuperado")
+
+                    for indice, fila in resultado_ocr.iterrows():
+                        titulo = (
+                            f"{fila['Archivo']} · página {fila['Página']} · "
+                            f"{fila['Confianza media (%)']:.1f}%"
+                        )
+
+                        with st.expander(titulo):
+                            texto = fila["Texto OCR"].strip()
+                            if texto:
+                                st.text_area(
+                                    "Texto OCR",
+                                    value=texto,
+                                    height=220,
+                                    key=f"ocr_texto_{indice}",
+                                    disabled=True,
+                                )
+                            else:
+                                st.warning(
+                                    "No se recuperó texto en esta página."
+                                )
+
+                    st.caption(
+                        "La confianza es una señal técnica del motor OCR; "
+                        "todavía no equivale a exactitud documental ni a una "
+                        "clasificación correcta."
+                    )
 
 with st.expander("Ver catálogo de codificación activo"):
     st.dataframe(
