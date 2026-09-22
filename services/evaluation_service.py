@@ -4,6 +4,7 @@ from io import BytesIO
 from pathlib import PurePosixPath
 from zipfile import BadZipFile, ZipFile
 
+import fitz
 import pandas as pd
 
 
@@ -57,6 +58,11 @@ def preparar_muestra_ocr(
                 "Ruta original": str(ruta),
                 "Archivo real": archivo,
                 "Páginas OCR": int((grupo["Página"] > 0).sum()),
+                "Páginas evaluadas": [
+                    int(pagina)
+                    for pagina in grupo["Página"].tolist()
+                    if int(pagina) > 0
+                ],
                 "Caracteres OCR": int(
                     pd.to_numeric(
                         grupo["Caracteres OCR"],
@@ -98,3 +104,43 @@ def extraer_pdf_del_zip(
         raise ValueError(
             "El expediente cargado no es un ZIP válido."
         ) from error
+
+
+
+def extraer_paginas_pdf_del_zip(
+    contenido_zip: bytes,
+    ruta_pdf: str,
+    paginas_1_based: list[int],
+) -> bytes:
+    """
+    Construye un PDF temporal en memoria con exactamente las páginas usadas
+    por la prueba OCR, para que la comparación multimodal sea equivalente.
+    """
+    pdf_original = extraer_pdf_del_zip(contenido_zip, ruta_pdf)
+
+    if not paginas_1_based:
+        raise ValueError("No se indicaron páginas para la evaluación multimodal.")
+
+    origen = fitz.open(stream=pdf_original, filetype="pdf")
+    destino = fitz.open()
+
+    try:
+        for numero in paginas_1_based:
+            indice = int(numero) - 1
+            if indice < 0 or indice >= origen.page_count:
+                raise ValueError(
+                    f"La página {numero} no existe en el documento evaluado."
+                )
+            destino.insert_pdf(
+                origen,
+                from_page=indice,
+                to_page=indice,
+            )
+
+        return destino.tobytes(
+            garbage=4,
+            deflate=True,
+        )
+    finally:
+        destino.close()
+        origen.close()
