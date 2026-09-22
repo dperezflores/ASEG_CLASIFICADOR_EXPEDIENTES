@@ -153,11 +153,13 @@ def clasificar_pdf_multimodal(
     enum_opciones = list(mapa.keys())
 
     prompt = (
-        "Clasifica este documento de auditoría de obra pública usando "
+        "Analiza este documento de auditoría de obra pública usando "
         "exclusivamente su contenido visual y textual. No uses ni infieras "
-        "información de nombres de archivo o rutas. Selecciona exactamente "
-        "una opción del catálogo. Usa fuera_catalogo solo si ninguna opción "
-        "corresponde razonablemente.\n\n"
+        "información de nombres de archivo o rutas. Primero identifica qué "
+        "tipo de documento es y proporciona un título documental breve. "
+        "Después determina si corresponde realmente a una de las opciones "
+        "del catálogo. No fuerces una coincidencia: usa fuera_catalogo si "
+        "ninguna opción corresponde de manera razonable.\n\n"
         "Opciones permitidas:\n"
         + "\n".join(opciones)
     )
@@ -165,6 +167,9 @@ def clasificar_pdf_multimodal(
     schema = {
         "type": "object",
         "properties": {
+            "detected_title": {
+                "type": "string",
+            },
             "option": {
                 "type": "string",
                 "enum": enum_opciones,
@@ -179,6 +184,7 @@ def clasificar_pdf_multimodal(
             },
         },
         "required": [
+            "detected_title",
             "option",
             "confidence",
             "evidence",
@@ -263,8 +269,12 @@ def clasificar_pdf_multimodal(
         else confianza_raw
     )
 
+    coincide_catalogo = opcion != "fuera_catalogo"
+
     return {
         "Documento": documento_alias,
+        "Título detectado": str(resultado["detected_title"]).strip(),
+        "Coincide catálogo": coincide_catalogo,
         "Resultado Ruta B": mapa[opcion]["concepto"],
         "Código Ruta B": mapa[opcion]["codigo"],
         "Confianza B": round(confianza_pct, 2),
