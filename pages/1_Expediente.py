@@ -33,6 +33,7 @@ CLAVES_EXPEDIENTE = (
     "resultados_jev",
     "resultados_multimodal",
     "resultados_hibridos",
+    "propuesta_clasificacion",
 )
 
 
@@ -59,6 +60,7 @@ def _restaurar_en_sesion(datos: dict):
         "resultados_jev",
         "resultados_multimodal",
         "resultados_hibridos",
+        "propuesta_clasificacion",
     )
 
     for clave in claves:
