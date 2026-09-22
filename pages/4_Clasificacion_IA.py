@@ -4,6 +4,7 @@ from services.catalog_service import cargar_catalogo
 from services.drive_persistence_service import (
     DrivePersistenceError,
     guardar_clasificacion_jev,
+    guardar_clasificacion_multimodal,
     guardar_ground_truth,
 )
 from services.evaluation_service import preparar_muestra_ocr
@@ -12,6 +13,13 @@ from services.jev_classifier_service import (
     clasificar_muestra_con_jev,
     jev_configurado,
     probar_conexion_jev,
+)
+from services.openai_multimodal_service import (
+    MODELOS,
+    OpenAIMultimodalError,
+    clasificar_muestra_multimodal,
+    openai_configurado,
+    probar_conexion_openai,
 )
 from ui.common import mostrar_encabezado, requerir_expediente
 
@@ -332,7 +340,131 @@ if "resultados_jev" in st.session_state:
                     f"{item['probabilidad'] * 100:.2f}%"
                 )
 
-st.subheader("4. Resultado comparativo · Prueba 1")
+st.subheader("4. Prueba 2 · Ruta B multimodal")
+
+st.caption(
+    "Para una comparación justa, el modelo multimodal recibe exactamente "
+    "las mismas páginas que se procesaron en OCR, no el PDF completo."
+)
+
+modelo_b = st.selectbox(
+    "Modelo multimodal",
+    options=list(MODELOS.keys()),
+    index=0,
+    format_func=lambda modelo: (
+        f"{MODELOS[modelo]['label']} · "
+        f"entrada USD {MODELOS[modelo]['input_per_million']:.2f}/M · "
+        f"salida USD {MODELOS[modelo]['output_per_million']:.2f}/M"
+    ),
+)
+
+if not openai_configurado():
+    st.warning(
+        "Para ejecutar la Ruta B agrega tu API key de OpenAI en "
+        "Streamlit Secrets con: [openai] api_key = \"...\""
+    )
+else:
+    col_test_b, col_run_b = st.columns([1, 2])
+
+    with col_test_b:
+        if st.button("Probar conexión con OpenAI"):
+            try:
+                probar_conexion_openai()
+                st.success("Conexión con OpenAI correcta.")
+            except OpenAIMultimodalError as error:
+                st.error(str(error))
+
+    with col_run_b:
+        if st.button(
+            "Clasificar muestra multimodal",
+            type="primary",
+            disabled=not referencias_completas or muestra_sel.empty,
+        ):
+            with st.spinner(
+                "El modelo multimodal está analizando las mismas páginas "
+                "evaluadas por OCR..."
+            ):
+                try:
+                    resultados_multimodal = clasificar_muestra_multimodal(
+                        muestra_sel,
+                        catalogo,
+                        st.session_state["contenido_zip"],
+                        modelo_b,
+                    )
+                    st.session_state[
+                        "resultados_multimodal"
+                    ] = resultados_multimodal
+
+                    if "drive_folder_id" in st.session_state:
+                        guardar_clasificacion_multimodal(
+                            st.session_state["drive_folder_id"],
+                            resultados_multimodal,
+                        )
+
+                    st.success(
+                        "Ruta B terminada y guardada en Google Drive."
+                    )
+                    st.rerun()
+                except (
+                    OpenAIMultimodalError,
+                    DrivePersistenceError,
+                    ValueError,
+                ) as error:
+                    st.error(str(error))
+
+if "resultados_multimodal" in st.session_state:
+    resultados_multimodal = st.session_state["resultados_multimodal"]
+
+    st.dataframe(
+        resultados_multimodal[
+            [
+                "Documento",
+                "Concepto real",
+                "Resultado Ruta B",
+                "Confianza B",
+                "Acierto B",
+                "Modelo B",
+                "Páginas B",
+                "Tokens entrada B",
+                "Tokens salida B",
+                "Costo B (USD)",
+                "Tiempo B (s)",
+            ]
+        ],
+        use_container_width=True,
+        hide_index=True,
+        column_config={
+            "Confianza B": st.column_config.NumberColumn(
+                "Confianza B",
+                format="%.2f %%",
+            ),
+            "Costo B (USD)": st.column_config.NumberColumn(
+                "Costo B (USD)",
+                format="$%.8f",
+            ),
+            "Tiempo B (s)": st.column_config.NumberColumn(
+                "Tiempo B (s)",
+                format="%.3f",
+            ),
+        },
+    )
+
+    aciertos_b = int(resultados_multimodal["Acierto B"].sum())
+    total_b = len(resultados_multimodal)
+    costo_b = float(resultados_multimodal["Costo B (USD)"].sum())
+    tiempo_b = float(resultados_multimodal["Tiempo B (s)"].sum())
+
+    b1, b2, b3 = st.columns(3)
+    b1.metric("Aciertos Ruta B", f"{aciertos_b}/{total_b}")
+    b2.metric("Costo Ruta B", f"USD {costo_b:.8f}")
+    b3.metric("Tiempo total Ruta B", f"{tiempo_b:.3f} s")
+
+    with st.expander("Ver evidencia utilizada por el modelo multimodal"):
+        for _, fila in resultados_multimodal.iterrows():
+            st.markdown(f"**{fila['Documento']}**")
+            st.write(fila["Evidencia B"])
+
+st.subheader("5. Resultado comparativo · Pruebas 1 y 2")
 
 comparativo = muestra_sel[
     ["Documento", "Concepto real"]
@@ -364,11 +496,31 @@ else:
     comparativo["Costo A (USD)"] = None
     comparativo["Tiempo A (s)"] = None
 
-comparativo["Resultado Ruta B"] = "Pendiente"
-comparativo["Confianza B"] = None
-comparativo["Acierto B"] = None
-comparativo["Costo B (USD)"] = None
-comparativo["Tiempo B (s)"] = None
+if "resultados_multimodal" in st.session_state:
+    resultados_multimodal = st.session_state["resultados_multimodal"]
+
+    columnas_b = resultados_multimodal[
+        [
+            "Documento",
+            "Resultado Ruta B",
+            "Confianza B",
+            "Acierto B",
+            "Costo B (USD)",
+            "Tiempo B (s)",
+        ]
+    ].copy()
+
+    comparativo = comparativo.merge(
+        columnas_b,
+        on="Documento",
+        how="left",
+    )
+else:
+    comparativo["Resultado Ruta B"] = "Pendiente"
+    comparativo["Confianza B"] = None
+    comparativo["Acierto B"] = None
+    comparativo["Costo B (USD)"] = None
+    comparativo["Tiempo B (s)"] = None
 
 st.dataframe(
     comparativo[
@@ -397,17 +549,18 @@ st.dataframe(
     },
 )
 
-if "resultados_jev" in st.session_state:
+if (
+    "resultados_jev" in st.session_state
+    and "resultados_multimodal" in st.session_state
+):
     st.success(
-        "Prueba 1 · Ruta A registrada. Los resultados de Jev se conservan "
-        "en Google Drive y se usarán como línea base para comparar la Ruta B."
+        "Las dos rutas ya fueron ejecutadas. La tabla muestra la comparación "
+        "directa de precisión sobre la misma muestra y las mismas páginas."
+    )
+elif "resultados_jev" in st.session_state:
+    st.info(
+        "La Ruta A ya está registrada. Ejecuta la Ruta B para completar "
+        "la comparación."
     )
 else:
-    st.caption(
-        "La Ruta A aún no se ha ejecutado para esta muestra."
-    )
-
-st.caption(
-    "La Ruta B permanece pendiente. Cuando se ejecute el modelo multimodal, "
-    "esta misma tabla mostrará ambos resultados lado a lado."
-)
+    st.caption("Las rutas de clasificación todavía están pendientes.")
