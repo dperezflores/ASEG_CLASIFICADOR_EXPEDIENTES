@@ -256,11 +256,18 @@ def clasificar_pdf_multimodal(
         + output_tokens / 1_000_000 * precios["output_per_million"]
     )
 
+    confianza_raw = float(resultado["confidence"])
+    confianza_pct = (
+        confianza_raw * 100
+        if 0 <= confianza_raw <= 1
+        else confianza_raw
+    )
+
     return {
         "Documento": documento_alias,
         "Resultado Ruta B": mapa[opcion]["concepto"],
         "Código Ruta B": mapa[opcion]["codigo"],
-        "Confianza B": round(float(resultado["confidence"]), 2),
+        "Confianza B": round(confianza_pct, 2),
         "Evidencia B": str(resultado["evidence"]).strip(),
         "Modelo B": str(respuesta.get("model") or modelo),
         "Tokens entrada B": input_tokens,
