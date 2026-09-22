@@ -519,6 +519,33 @@ def cargar_expediente(folder_id: str) -> dict:
                 ground_truth_raw.decode("utf-8")
             )
 
+        jev_raw = _leer_archivo_por_nombre(
+            servicio,
+            folder_id,
+            "clasificacion_jev.csv",
+        )
+        if jev_raw:
+            jev_df = pd.read_csv(io.BytesIO(jev_raw))
+            if "Top 3" in jev_df.columns:
+                jev_df["Top 3"] = jev_df["Top 3"].apply(
+                    lambda valor: (
+                        json.loads(valor)
+                        if isinstance(valor, str) and valor.strip()
+                        else []
+                    )
+                )
+            resultado["resultados_jev"] = jev_df
+
+        multimodal_raw = _leer_archivo_por_nombre(
+            servicio,
+            folder_id,
+            "clasificacion_multimodal.csv",
+        )
+        if multimodal_raw:
+            resultado["resultados_multimodal"] = pd.read_csv(
+                io.BytesIO(multimodal_raw)
+            )
+
         return resultado
 
     except DrivePersistenceError:
@@ -552,4 +579,25 @@ def guardar_clasificacion_jev(
     except Exception as error:
         raise DrivePersistenceError(
             f"No fue posible guardar la clasificación de Jev en Drive: {error}"
+        ) from error
+
+
+
+def guardar_clasificacion_multimodal(
+    folder_id: str,
+    resultados: pd.DataFrame,
+) -> None:
+    try:
+        servicio = _servicio_drive()
+        _subir_o_actualizar(
+            servicio,
+            folder_id,
+            "clasificacion_multimodal.csv",
+            _df_csv_bytes(resultados),
+            "text/csv",
+        )
+    except Exception as error:
+        raise DrivePersistenceError(
+            "No fue posible guardar la clasificación multimodal en Drive: "
+            f"{error}"
         ) from error
