@@ -1,6 +1,7 @@
 import streamlit as st
 
 from services.catalog_service import cargar_catalogo
+from services.drive_persistence_service import DrivePersistenceError, guardar_ground_truth
 from services.evaluation_service import preparar_muestra_ocr
 from ui.common import mostrar_encabezado, requerir_expediente
 
@@ -171,6 +172,20 @@ else:
     st.info(
         "Completa las referencias pendientes antes de ejecutar los modelos."
     )
+
+if st.session_state.get("ground_truth_manual"):
+    if st.button("Guardar referencias en Google Drive"):
+        try:
+            guardar_ground_truth(
+                st.session_state["drive_folder_id"],
+                st.session_state["ground_truth_manual"],
+            )
+            st.success("Referencias guardadas en Google Drive.")
+        except (DrivePersistenceError, KeyError) as error:
+            st.error(
+                "No fue posible guardar las referencias en Drive: "
+                f"{error}"
+            )
 
 st.subheader("2. Preparación de las dos rutas")
 
