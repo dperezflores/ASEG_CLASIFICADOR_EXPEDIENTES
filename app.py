@@ -3,7 +3,7 @@ from pathlib import Path
 import streamlit as st
 
 from config.constants import APP_NAME, APP_SUBTITLE
-from services.catalog_service import obtener_hojas_catalogo
+from services.catalog_service import cargar_catalogo, obtener_hojas_catalogo
 
 
 st.set_page_config(
@@ -14,7 +14,10 @@ st.set_page_config(
 
 css_path = Path("assets/styles.css")
 if css_path.exists():
-    st.markdown(f"<style>{css_path.read_text(encoding='utf-8')}</style>", unsafe_allow_html=True)
+    st.markdown(
+        f"<style>{css_path.read_text(encoding='utf-8')}</style>",
+        unsafe_allow_html=True,
+    )
 
 st.markdown(
     f"""
@@ -28,7 +31,8 @@ st.markdown(
 )
 
 st.info(
-    "Primera etapa del proyecto: validar la estructura de la aplicación y la lectura del catálogo de codificación."
+    "Etapa actual: validar que la aplicación interprete correctamente "
+    "el catálogo institucional de codificación."
 )
 
 st.subheader("Configuración del expediente")
@@ -43,13 +47,45 @@ procedimiento = st.selectbox(
     }[x],
 )
 
-st.write(f"Procedimiento seleccionado: **{procedimiento}**")
+try:
+    hojas = obtener_hojas_catalogo()
 
-hojas = obtener_hojas_catalogo()
-if hojas:
-    st.caption("Hojas detectadas en el catálogo: " + ", ".join(hojas))
-else:
-    st.warning(
-        "El catálogo todavía no se encuentra cargado en la carpeta /catalogo. "
-        "Lo incorporaremos en el siguiente paso."
-    )
+    if procedimiento not in hojas:
+        st.error(
+            f"La hoja {procedimiento} no fue encontrada en el catálogo."
+        )
+        st.stop()
+
+    catalogo = cargar_catalogo(procedimiento)
+
+except (FileNotFoundError, ValueError) as error:
+    st.error(str(error))
+    st.stop()
+
+st.success(
+    f"Catálogo cargado correctamente: {len(catalogo)} documentos "
+    f"disponibles para {procedimiento}."
+)
+
+st.subheader("Catálogo activo")
+
+st.dataframe(
+    catalogo,
+    use_container_width=True,
+    hide_index=True,
+    column_config={
+        "Código": st.column_config.TextColumn(
+            "Código",
+            width="medium",
+        ),
+        "Concepto": st.column_config.TextColumn(
+            "Concepto",
+            width="large",
+        ),
+    },
+)
+
+st.caption(
+    "En esta etapa la aplicación únicamente lee y presenta el catálogo. "
+    "Todavía no se realiza clasificación automática de documentos."
+)
