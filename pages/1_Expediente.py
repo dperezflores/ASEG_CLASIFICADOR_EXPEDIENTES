@@ -10,8 +10,6 @@ from ui.common import (
 )
 
 
-configurar_pagina("Expediente")
-mostrar_sidebar_expediente()
 mostrar_encabezado(
     "Expediente",
     "Carga, configuración e inventario del expediente de obra pública",
