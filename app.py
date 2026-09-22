@@ -5,6 +5,7 @@ import streamlit as st
 from config.constants import APP_NAME, APP_SUBTITLE, CARPETAS_IGNORADAS
 from services.catalog_service import cargar_catalogo, obtener_hojas_catalogo
 from services.expediente_service import formatear_tamano, inventariar_expediente_zip
+from services.pdf_service import analizar_pdfs_zip
 
 
 st.set_page_config(
@@ -32,8 +33,8 @@ st.markdown(
 )
 
 st.info(
-    "Etapa actual: recibir un expediente completo en ZIP y construir "
-    "su inventario sin modificar los archivos originales."
+    "Etapa actual: inventariar el expediente y determinar qué PDF tienen "
+    "texto extraíble y cuáles requerirán OCR."
 )
 
 st.subheader("1. Configuración del expediente")
@@ -73,7 +74,7 @@ archivo_zip = st.file_uploader(
     type=["zip"],
     help=(
         "El ZIP puede contener carpetas, subcarpetas y distintos tipos de "
-        "archivo. En esta etapa solo se construye el inventario."
+        "archivo. Los documentos originales no se modifican."
     ),
 )
 
@@ -83,10 +84,16 @@ st.caption(
 )
 
 if archivo_zip is not None:
+    contenido_zip = archivo_zip.getvalue()
+    expediente_id = f"{archivo_zip.name}:{archivo_zip.size}"
+
+    if st.session_state.get("expediente_id") != expediente_id:
+        st.session_state["expediente_id"] = expediente_id
+        st.session_state.pop("analisis_pdf", None)
+        st.session_state.pop("resumen_pdf", None)
+
     try:
-        inventario, resumen = inventariar_expediente_zip(
-            archivo_zip.getvalue()
-        )
+        inventario, resumen = inventariar_expediente_zip(contenido_zip)
     except ValueError as error:
         st.error(str(error))
         st.stop()
@@ -135,33 +142,63 @@ if archivo_zip is not None:
             ],
             use_container_width=True,
             hide_index=True,
+        )
+
+    st.subheader("3. Diagnóstico de PDF")
+
+    st.write(
+        "Este diagnóstico todavía no hace OCR. Solo revisa si cada página "
+        "contiene texto que Python puede extraer directamente."
+    )
+
+    if st.button(
+        "Analizar PDF del expediente",
+        type="primary",
+        use_container_width=False,
+    ):
+        with st.spinner(
+            "Revisando los PDF. El tiempo depende del número de páginas..."
+        ):
+            try:
+                analisis_pdf, resumen_pdf = analizar_pdfs_zip(contenido_zip)
+                st.session_state["analisis_pdf"] = analisis_pdf
+                st.session_state["resumen_pdf"] = resumen_pdf
+            except ValueError as error:
+                st.error(str(error))
+
+    if "analisis_pdf" in st.session_state:
+        analisis_pdf = st.session_state["analisis_pdf"]
+        resumen_pdf = st.session_state["resumen_pdf"]
+
+        st.success(
+            f"Diagnóstico terminado: {resumen_pdf['pdfs']} PDF y "
+            f"{resumen_pdf['paginas']} páginas revisadas."
+        )
+
+        if resumen_pdf["estados"]:
+            columnas_pdf = st.columns(len(resumen_pdf["estados"]))
+            for columna, (estado, cantidad) in zip(
+                columnas_pdf,
+                resumen_pdf["estados"].items(),
+            ):
+                columna.metric(estado, cantidad)
+
+        st.dataframe(
+            analisis_pdf,
+            use_container_width=True,
+            hide_index=True,
             column_config={
-                "Ruta original": st.column_config.TextColumn(
-                    "Ruta original",
-                    width="large",
-                ),
-                "Archivo": st.column_config.TextColumn(
-                    "Archivo",
-                    width="large",
-                ),
-                "Extensión": st.column_config.TextColumn(
-                    "Extensión",
-                    width="small",
-                ),
-                "Tipo": st.column_config.TextColumn(
-                    "Tipo",
-                    width="small",
-                ),
-                "Tamaño": st.column_config.TextColumn(
-                    "Tamaño",
-                    width="small",
-                ),
+                "Texto (%)": st.column_config.NumberColumn(
+                    "Texto (%)",
+                    format="%.1f %%",
+                )
             },
         )
 
         st.caption(
-            "En esta etapa el ZIP se lee en memoria. Los documentos no se "
-            "extraen, renombran, clasifican ni modifican."
+            "Texto extraíble: al menos 80 % de las páginas contienen texto "
+            "suficiente. Mixto: solo parte de las páginas contiene texto. "
+            "Requiere OCR: no se detectó texto extraíble."
         )
 
 with st.expander("Ver catálogo de codificación activo"):
@@ -169,14 +206,4 @@ with st.expander("Ver catálogo de codificación activo"):
         catalogo,
         use_container_width=True,
         hide_index=True,
-        column_config={
-            "Código": st.column_config.TextColumn(
-                "Código",
-                width="medium",
-            ),
-            "Concepto": st.column_config.TextColumn(
-                "Concepto",
-                width="large",
-            ),
-        },
     )
