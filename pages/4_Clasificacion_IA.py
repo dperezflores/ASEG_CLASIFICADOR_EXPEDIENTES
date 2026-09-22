@@ -47,6 +47,75 @@ seleccion = st.multiselect(
 
 muestra_sel = muestra[muestra["Documento"].isin(seleccion)].copy()
 
+# Ground truth manual para archivos cuyo nombre no coincide con el catálogo.
+if "ground_truth_manual" not in st.session_state:
+    st.session_state["ground_truth_manual"] = {}
+
+pendientes = muestra_sel[
+    muestra_sel["Concepto real"] == "Pendiente de referencia"
+].copy()
+
+if not pendientes.empty:
+    st.warning(
+        "Hay documentos cuya clasificación real no pudo determinarse "
+        "automáticamente por el nombre del archivo. Completa su referencia "
+        "antes de ejecutar la comparación."
+    )
+
+    with st.expander("Completar clasificación real de documentos pendientes", expanded=True):
+        opciones_catalogo = {
+            f"{fila['Concepto']}  ·  {fila['Código']}": {
+                "concepto": str(fila["Concepto"]).strip(),
+                "codigo": str(fila["Código"]).strip(),
+            }
+            for _, fila in catalogo.iterrows()
+        }
+
+        etiquetas = ["— Seleccionar —"] + list(opciones_catalogo.keys())
+
+        for _, fila in pendientes.iterrows():
+            ruta = fila["Ruta original"]
+            documento = fila["Documento"]
+            archivo_real = fila["Archivo real"]
+
+            valor_guardado = st.session_state["ground_truth_manual"].get(ruta)
+
+            indice_actual = 0
+            if valor_guardado:
+                for i, etiqueta in enumerate(etiquetas[1:], start=1):
+                    datos = opciones_catalogo[etiqueta]
+                    if (
+                        datos["concepto"] == valor_guardado["concepto"]
+                        and datos["codigo"] == valor_guardado["codigo"]
+                    ):
+                        indice_actual = i
+                        break
+
+            seleccion_real = st.selectbox(
+                f"{documento} · {archivo_real}",
+                options=etiquetas,
+                index=indice_actual,
+                key=f"gt_{ruta}",
+            )
+
+            if seleccion_real != "— Seleccionar —":
+                datos = opciones_catalogo[seleccion_real]
+                st.session_state["ground_truth_manual"][ruta] = datos
+            else:
+                st.session_state["ground_truth_manual"].pop(ruta, None)
+
+# Aplicar las referencias manuales únicamente para evaluación interna.
+for indice, fila in muestra_sel.iterrows():
+    ruta = fila["Ruta original"]
+    manual = st.session_state["ground_truth_manual"].get(ruta)
+
+    if (
+        fila["Concepto real"] == "Pendiente de referencia"
+        and manual is not None
+    ):
+        muestra_sel.at[indice, "Concepto real"] = manual["concepto"]
+        muestra_sel.at[indice, "Código real"] = manual["codigo"]
+
 tabla_visible = muestra_sel[
     [
         "Documento",
@@ -87,6 +156,20 @@ with st.expander("Ver correspondencia interna de la muestra"):
         ],
         use_container_width=True,
         hide_index=True,
+    )
+
+referencias_completas = not (
+    muestra_sel["Concepto real"] == "Pendiente de referencia"
+).any()
+
+if referencias_completas:
+    st.success(
+        "La muestra ya tiene clasificación real completa y está lista "
+        "para medir precisión."
+    )
+else:
+    st.info(
+        "Completa las referencias pendientes antes de ejecutar los modelos."
     )
 
 st.subheader("2. Preparación de las dos rutas")
