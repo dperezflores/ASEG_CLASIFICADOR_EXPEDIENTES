@@ -1,9 +1,7 @@
 import streamlit as st
 
 from ui.common import (
-    configurar_pagina,
     mostrar_encabezado,
-    mostrar_sidebar_expediente,
     requerir_expediente,
 )
 
