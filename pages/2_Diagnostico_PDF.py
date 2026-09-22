@@ -7,8 +7,6 @@ from ui.common import (
 )
 
 
-configurar_pagina("Diagnóstico PDF")
-mostrar_sidebar_expediente()
 mostrar_encabezado(
     "Diagnóstico PDF",
     "Identificación de texto nativo y necesidad preliminar de OCR",
