@@ -36,6 +36,11 @@ paginas = {
             title="Clasificación IA",
             icon="🧠",
         ),
+        st.Page(
+            "pages/5_Clasificacion_Hibrida.py",
+            title="Clasificación híbrida",
+            icon="⚡",
+        ),
     ],
 }
 
