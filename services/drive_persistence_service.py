@@ -557,6 +557,16 @@ def cargar_expediente(folder_id: str) -> dict:
                     multimodal_df["Confianza B"] = confianza_b * 100
             resultado["resultados_multimodal"] = multimodal_df
 
+        hibrido_raw = _leer_archivo_por_nombre(
+            servicio,
+            folder_id,
+            "clasificacion_hibrida.csv",
+        )
+        if hibrido_raw:
+            resultado["resultados_hibridos"] = pd.read_csv(
+                io.BytesIO(hibrido_raw)
+            )
+
         return resultado
 
     except DrivePersistenceError:
@@ -610,5 +620,26 @@ def guardar_clasificacion_multimodal(
     except Exception as error:
         raise DrivePersistenceError(
             "No fue posible guardar la clasificación multimodal en Drive: "
+            f"{error}"
+        ) from error
+
+
+
+def guardar_clasificacion_hibrida(
+    folder_id: str,
+    resultados: pd.DataFrame,
+) -> None:
+    try:
+        servicio = _servicio_drive()
+        _subir_o_actualizar(
+            servicio,
+            folder_id,
+            "clasificacion_hibrida.csv",
+            _df_csv_bytes(resultados),
+            "text/csv",
+        )
+    except Exception as error:
+        raise DrivePersistenceError(
+            "No fue posible guardar la clasificación híbrida en Drive: "
             f"{error}"
         ) from error
