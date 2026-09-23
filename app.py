@@ -27,6 +27,11 @@ paginas = {
             icon="🗂️",
         ),
         st.Page(
+            "pages/2_Unidad_Documental.py",
+            title="Unidad documental",
+            icon="📂",
+        ),
+        st.Page(
             "pages/2_Diagnostico_PDF.py",
             title="Diagnóstico PDF",
             icon="📄",
