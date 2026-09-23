@@ -192,7 +192,7 @@ if (
 
     m1, m2, m3, m4 = st.columns(4)
     m1.metric("PDF analizados", len(detalle))
-    m2.metric("Coincidencias catálogo", coinciden)
+    m2.metric("Códigos asignables", coinciden)
     m3.metric("Soporte / fuera catálogo", soportes)
     m4.metric("Errores", errores)
 
