@@ -149,8 +149,12 @@ def clasificar_texto_con_jev(
                     "Classify this public-works audit document into exactly "
                     "one of the supplied document types. Use only the document "
                     "content. Do not infer from filenames or folder paths. "
-                    "Choose fuera_catalogo only when none of the listed "
-                    "document types reasonably matches."
+                    "A match requires documentary and functional equivalence, "
+                    "not merely similar words, subject matter, project phase "
+                    "or administrative context. Do not choose the nearest "
+                    "option just because it is similar. Choose fuera_catalogo "
+                    "when the document has a different function or is only "
+                    "supporting documentation for a listed document type."
                 ),
                 "criteria": criterios,
             }
