@@ -674,3 +674,61 @@ def guardar_propuesta_clasificacion(
             "No fue posible guardar la propuesta de clasificación en Drive: "
             f"{error}"
         ) from error
+
+
+
+def actualizar_procedimiento_expediente(
+    folder_id: str,
+    procedimiento: str,
+) -> None:
+    """
+    Actualiza el procedimiento asociado a un expediente ya guardado.
+
+    Modifica tanto estado.json como las appProperties de la carpeta para que
+    el procedimiento correcto se restaure en sesiones futuras.
+    """
+    try:
+        servicio = _servicio_drive()
+
+        estado_raw = _leer_archivo_por_nombre(
+            servicio,
+            folder_id,
+            "estado.json",
+        )
+        if not estado_raw:
+            raise DrivePersistenceError(
+                "No se encontró estado.json para el expediente."
+            )
+
+        estado = json.loads(estado_raw.decode("utf-8"))
+        estado["procedimiento"] = str(procedimiento).strip().upper()
+
+        _subir_o_actualizar(
+            servicio,
+            folder_id,
+            "estado.json",
+            _json_bytes(estado),
+            "application/json",
+        )
+
+        carpeta = servicio.files().get(
+            fileId=folder_id,
+            fields="appProperties",
+        ).execute()
+
+        props = carpeta.get("appProperties") or {}
+        props["procedimiento"] = str(procedimiento).strip().upper()
+
+        servicio.files().update(
+            fileId=folder_id,
+            body={"appProperties": props},
+            fields="id",
+        ).execute()
+
+    except DrivePersistenceError:
+        raise
+    except Exception as error:
+        raise DrivePersistenceError(
+            "No fue posible actualizar el procedimiento del expediente: "
+            f"{error}"
+        ) from error
