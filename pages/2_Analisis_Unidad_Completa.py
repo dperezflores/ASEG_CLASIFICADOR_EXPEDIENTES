@@ -39,10 +39,12 @@ mapa = construir_mapa_estructural(inventario)
 estimaciones = obtener_estimaciones_detectadas(mapa)
 
 st.info(
-    "Esta etapa analiza todos los PDF directos de una sola estimación y "
-    "separa identidad, alcance documental y función dentro de la unidad. "
-    "Un parcial o extracto no recibe automáticamente el código del documento "
-    "completo. Todavía no divide documentos compuestos."
+    "Esta versión vuelve a separar las decisiones en dos etapas. Primero "
+    "clasifica cada PDF por su propia identidad documental. Después ejecuta "
+    "una validación secundaria solo cuando hace falta: relación con la unidad "
+    "si apunta a la estimación, o integridad documental si apunta a un código "
+    "propio. La segunda etapa no puede sustituir un código propio válido por "
+    "el código de la estimación."
 )
 
 if estimaciones.empty:
@@ -83,9 +85,9 @@ c2.metric("PDF directos", len(archivos_pdf))
 c3.metric("Procedimiento", procedimiento)
 
 st.caption(
-    "Cada PDF se analiza con alias neutro; la IA no recibe el nombre real "
-    "ni la ruta. Después Python consolida identidad, alcance, relación con "
-    "la unidad y equivalencia real con el catálogo."
+    "La IA no recibe el nombre real ni la ruta. La clasificación inicial "
+    "se conserva como referencia y la validación secundaria tiene una tarea "
+    "limitada; no vuelve a reclasificar libremente el documento."
 )
 
 with st.expander("Ver componentes que se analizarán"):
@@ -165,6 +167,13 @@ if (
     detalle = guardado["detalle"]
     grupos = guardado["grupos"]
 
+    if "Clasificación inicial" not in detalle.columns:
+        st.warning(
+            "El resultado guardado pertenece a la versión anterior del "
+            "análisis. Ejecuta nuevamente 'Analizar unidad completa'."
+        )
+        st.stop()
+
     st.subheader("2. Resultado por componente")
 
     coinciden = int(detalle["Coincide catálogo"].astype(bool).sum())
@@ -192,9 +201,11 @@ if (
             [
                 "Archivo",
                 "Título detectado",
+                "Clasificación inicial",
+                "Código inicial",
+                "Validación secundaria",
                 "Alcance documental",
                 "Relación con la unidad",
-                "Concepto relacionado",
                 "Coincide catálogo",
                 "Código de catálogo",
                 "Confianza (%)",
@@ -267,6 +278,9 @@ if (
                     "Archivo",
                     "Ruta utilizada",
                     "Motivo de ruta",
+                    "Clasificación inicial",
+                    "Código inicial",
+                    "Validación secundaria",
                     "Alcance documental",
                     "Relación con la unidad",
                     "Concepto relacionado",
