@@ -14,6 +14,7 @@ from services.structural_analysis_service import (
 from services.unit_content_analysis_service import (
     agrupar_resultados_unidad,
     analizar_unidad_completa,
+    consolidar_candidatos_unidad,
 )
 from ui.common import mostrar_encabezado, requerir_expediente
 
@@ -39,12 +40,11 @@ mapa = construir_mapa_estructural(inventario)
 estimaciones = obtener_estimaciones_detectadas(mapa)
 
 st.info(
-    "Esta versión vuelve a separar las decisiones en dos etapas. Primero "
-    "clasifica cada PDF por su propia identidad documental. Después ejecuta "
-    "una validación secundaria solo cuando hace falta: relación con la unidad "
-    "si apunta a la estimación, o integridad documental si apunta a un código "
-    "propio. La segunda etapa no puede sustituir un código propio válido por "
-    "el código de la estimación."
+    "Esta versión trabaja en tres etapas. Primero clasifica cada PDF por su "
+    "identidad documental. Después valida la integridad de los documentos con "
+    "código propio. Finalmente compara conjuntamente todos los archivos que "
+    "apuntan al código de la estimación para decidir cuál representa la unidad, "
+    "cuáles son componentes y cuáles son solo soporte."
 )
 
 if estimaciones.empty:
@@ -86,8 +86,8 @@ c3.metric("Procedimiento", procedimiento)
 
 st.caption(
     "La IA no recibe el nombre real ni la ruta. La clasificación inicial "
-    "se conserva como referencia y la validación secundaria tiene una tarea "
-    "limitada; no vuelve a reclasificar libremente el documento."
+    "se conserva. Los códigos propios se protegen y los candidatos al código "
+    "de la estimación se resuelven mediante una comparación conjunta."
 )
 
 with st.expander("Ver componentes que se analizarán"):
@@ -139,8 +139,23 @@ if st.button(
             on_progress=actualizar_progreso,
         )
 
+        estado.write(
+            "Comparando conjuntamente los candidatos a la unidad..."
+        )
+
+        comparado, comparacion, meta_comparacion = (
+            consolidar_candidatos_unidad(
+                contenido_zip=contenido_zip,
+                resultados=resultados,
+                procedimiento=procedimiento,
+                consecutivo=int(unidad["Consecutivo"]),
+                modelo_multimodal=modelo,
+                tipo_unidad="Estimación",
+            )
+        )
+
         consolidado, grupos = agrupar_resultados_unidad(
-            resultados=resultados,
+            resultados=comparado,
             procedimiento=procedimiento,
             consecutivo=int(unidad["Consecutivo"]),
         )
@@ -150,6 +165,8 @@ if st.button(
             "procedimiento": procedimiento,
             "consecutivo": int(unidad["Consecutivo"]),
             "detalle": consolidado,
+            "comparacion": comparacion,
+            "meta_comparacion": meta_comparacion,
             "grupos": grupos,
         }
 
@@ -165,9 +182,14 @@ if (
     and guardado.get("procedimiento") == procedimiento
 ):
     detalle = guardado["detalle"]
+    comparacion = guardado.get("comparacion", pd.DataFrame())
+    meta_comparacion = guardado.get("meta_comparacion", {})
     grupos = guardado["grupos"]
 
-    if "Clasificación inicial" not in detalle.columns:
+    if (
+        "Clasificación inicial" not in detalle.columns
+        or "Relación comparativa" not in detalle.columns
+    ):
         st.warning(
             "El resultado guardado pertenece a la versión anterior del "
             "análisis. Ejecuta nuevamente 'Analizar unidad completa'."
@@ -183,12 +205,16 @@ if (
     errores = int(
         detalle["Error"].astype(str).str.strip().ne("").sum()
     )
-    costo = float(
+    costo_componentes = float(
         pd.to_numeric(
             detalle["Costo (USD)"],
             errors="coerce",
         ).fillna(0).sum()
     )
+    costo_comparacion = float(
+        meta_comparacion.get("Costo comparación (USD)", 0.0)
+    )
+    costo = costo_componentes + costo_comparacion
 
     m1, m2, m3, m4 = st.columns(4)
     m1.metric("PDF analizados", len(detalle))
@@ -205,6 +231,7 @@ if (
                 "Código inicial",
                 "Validación secundaria",
                 "Alcance documental",
+                "Relación comparativa",
                 "Relación con la unidad",
                 "Coincide catálogo",
                 "Código de catálogo",
@@ -231,7 +258,39 @@ if (
         f"Parciales/extractos detectados: {parciales}"
     )
 
-    st.subheader("3. Agrupación lógica de la unidad")
+    st.subheader("3. Comparación conjunta de candidatos")
+
+    if comparacion.empty:
+        st.info(
+            "No fue necesario comparar candidatos para el código de la unidad."
+        )
+    else:
+        representante = meta_comparacion.get("Representante") or "No definido"
+        st.write(f"**Representante seleccionado:** {representante}")
+        st.write(
+            f"**Conclusión comparativa:** "
+            f"{meta_comparacion.get('Evidencia unidad', '')}"
+        )
+
+        st.dataframe(
+            comparacion,
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                "Confianza comparativa (%)": st.column_config.NumberColumn(
+                    "Confianza comparativa (%)",
+                    format="%.1f %%",
+                )
+            },
+        )
+
+        st.caption(
+            "Esta comparación solo puede decidir el papel relativo de los "
+            "candidatos a la estimación. No puede alterar documentos que ya "
+            "tengan otro código propio validado."
+        )
+
+    st.subheader("4. Agrupación lógica de la unidad")
 
     st.dataframe(
         grupos,
@@ -248,12 +307,17 @@ if (
 
     if not grupo_unidad.empty:
         cantidad = int(grupo_unidad.iloc[0]["Archivos"])
-        if cantidad > 1:
+        representante = meta_comparacion.get("Representante") or ""
+        if representante:
+            st.success(
+                f"La unidad {codigo_unidad} quedó consolidada con "
+                f"{cantidad} archivo(s) asociados. Representante candidato: "
+                f"{representante}."
+            )
+        elif cantidad > 0:
             st.warning(
-                f"Se encontraron {cantidad} archivos asociados a "
-                f"{codigo_unidad}. Esto no se trata todavía como duplicado: "
-                "pueden ser componentes distintos de la misma unidad lógica. "
-                "El archivo representativo sigue pendiente de decidir."
+                f"Hay {cantidad} archivo(s) asociados a {codigo_unidad}, "
+                "pero la comparación no pudo definir un representante."
             )
 
     repetidos = grupos[
@@ -282,6 +346,9 @@ if (
                     "Código inicial",
                     "Validación secundaria",
                     "Alcance documental",
+                    "Relación comparativa",
+                    "Confianza comparativa (%)",
+                    "Evidencia comparativa",
                     "Relación con la unidad",
                     "Concepto relacionado",
                     "Código relacionado",
@@ -300,7 +367,7 @@ if (
 st.divider()
 
 st.caption(
-    "Esta versión solo consolida relaciones. No renombra archivos, no mueve "
-    "documentos, no selecciona todavía el archivo representativo y no divide "
-    "PDF que contengan varios documentos."
+    "Esta versión ya puede proponer un representante de la unidad mediante "
+    "comparación conjunta, pero todavía no renombra ni mueve archivos y no "
+    "divide PDF que contengan varios documentos."
 )
