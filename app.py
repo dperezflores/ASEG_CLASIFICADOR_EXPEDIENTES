@@ -37,6 +37,11 @@ paginas = {
             icon="🔬",
         ),
         st.Page(
+            "pages/2_Analisis_Unidad_Completa.py",
+            title="Análisis unidad completa",
+            icon="🧩",
+        ),
+        st.Page(
             "pages/2_Diagnostico_PDF.py",
             title="Diagnóstico PDF",
             icon="📄",
