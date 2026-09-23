@@ -9,6 +9,7 @@ from services.drive_persistence_service import (
     guardar_expediente,
     listar_expedientes,
     probar_conexion,
+    actualizar_procedimiento_expediente,
 )
 from services.expediente_service import formatear_tamano, inventariar_expediente_zip
 from ui.common import (
@@ -124,9 +125,32 @@ if expediente_activo():
     if procedimiento != st.session_state["procedimiento"]:
         st.warning(
             "El procedimiento seleccionado es distinto al procedimiento "
-            "del expediente activo. Usa 'Cambiar expediente' para evitar "
-            "mezclar resultados."
+            "guardado para este expediente."
         )
+
+        if st.button(
+            "Aplicar este procedimiento al expediente",
+            type="primary",
+        ):
+            try:
+                actualizar_procedimiento_expediente(
+                    st.session_state["drive_folder_id"],
+                    procedimiento,
+                )
+                st.session_state["procedimiento"] = procedimiento
+
+                # Un resultado de componente depende del catálogo activo.
+                st.session_state.pop(
+                    "resultado_componente_unidad",
+                    None,
+                )
+
+                st.success(
+                    "Procedimiento actualizado para este expediente."
+                )
+                st.rerun()
+            except DrivePersistenceError as error:
+                st.error(str(error))
 
     if st.button("Cambiar expediente"):
         _limpiar_expediente()
