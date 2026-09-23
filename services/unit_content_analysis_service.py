@@ -7,17 +7,14 @@ import fitz
 import pandas as pd
 
 from services.evaluation_service import extraer_paginas_pdf_del_zip
-from services.jev_classifier_service import JevError, clasificar_texto_con_jev
 from services.openai_multimodal_service import (
-    OpenAIMultimodalError,
-    analizar_componente_unidad_multimodal,
+    analizar_relacion_unidad_multimodal,
     clasificar_pdf_multimodal,
+    validar_integridad_documental_multimodal,
 )
 
 
 PAGINAS_INICIALES = 2
-MIN_CARACTERES_TEXTO = 200
-UMBRAL_JEV = 70.0
 
 
 def diagnosticar_componente_pdf(
@@ -25,10 +22,7 @@ def diagnosticar_componente_pdf(
     ruta_pdf: str,
 ) -> dict:
     """
-    Revisa únicamente las primeras páginas de un componente de la unidad.
-
-    No usa IA. Determina si existe texto nativo suficiente para intentar Jev
-    o si, en el prototipo web actual, conviene usar multimodal.
+    Diagnóstico técnico previo. No usa IA ni toma decisiones documentales.
     """
     with ZipFile(BytesIO(contenido_zip)) as archivo_zip:
         pdf_bytes = archivo_zip.read(ruta_pdf)
@@ -53,153 +47,17 @@ def diagnosticar_componente_pdf(
     texto = "\n\n".join(textos).strip()
     caracteres = len("".join(texto.split()))
 
-    ruta_sugerida = "Multimodal contextual"
-    if caracteres >= MIN_CARACTERES_TEXTO:
-        motivo = (
-            "Existe texto nativo, pero esta fase necesita evaluar también "
-            "alcance y función documental dentro de la unidad."
-        )
-    else:
-        motivo = (
-            "Texto nativo insuficiente. Esta fase usa análisis multimodal "
-            "contextual para evaluar identidad, alcance y función."
-        )
-
     return {
         "Páginas totales": total_paginas,
         "Páginas evaluadas": paginas,
         "Caracteres útiles": caracteres,
-        "Ruta sugerida": ruta_sugerida,
-        "Motivo": motivo,
+        "Ruta sugerida": "Multimodal en prototipo",
+        "Motivo": (
+            "En esta fase se prioriza precisión. La clasificación inicial "
+            "se hace por contenido y las validaciones secundarias solo se "
+            "ejecutan cuando el resultado realmente lo requiere."
+        ),
         "Texto nativo": texto,
-    }
-
-
-def _interpretar_rol(
-    coincide_catalogo: bool,
-    codigo: str,
-    procedimiento: str,
-) -> str:
-    if not coincide_catalogo:
-        return "Posible soporte / fuera de catálogo"
-
-    codigo_normalizado = str(codigo).upper()
-    prefijo_estimacion = f"EJE_{procedimiento.upper()}_EST_"
-
-    if prefijo_estimacion in codigo_normalizado:
-        return "Posible representación de la unidad"
-
-    return "Posible documento con código propio"
-
-
-def _paginas_contexto_unidad(total_paginas: int) -> list[int]:
-    """
-    Selecciona hasta cuatro páginas para evaluar identidad y alcance.
-
-    En documentos cortos usa todas. En documentos largos toma inicio y final,
-    porque el alcance documental no siempre puede inferirse solo de la portada.
-    """
-    total = int(total_paginas)
-    if total <= 0:
-        return []
-    if total <= 4:
-        return list(range(1, total + 1))
-
-    return [1, 2, total - 1, total]
-
-
-def analizar_componente_unidad(
-    contenido_zip: bytes,
-    ruta_pdf: str,
-    catalogo: pd.DataFrame,
-    procedimiento: str,
-    modelo_multimodal: str,
-    umbral_jev: float = UMBRAL_JEV,
-    tipo_unidad: str = "Estimación",
-    consecutivo: int = 1,
-) -> dict:
-    """
-    Analiza un componente dentro de una unidad documental.
-
-    En esta fase se prioriza precisión sobre costo: se usa análisis multimodal
-    contextual para separar identidad, alcance, relación con la unidad y
-    equivalencia real con el catálogo. El nombre real y la ruta no se envían
-    al modelo.
-    """
-    diagnostico = diagnosticar_componente_pdf(
-        contenido_zip,
-        ruta_pdf,
-    )
-
-    paginas = _paginas_contexto_unidad(
-        diagnostico["Páginas totales"]
-    )
-
-    pdf_reducido = extraer_paginas_pdf_del_zip(
-        contenido_zip,
-        ruta_pdf,
-        paginas,
-    )
-
-    mm = analizar_componente_unidad_multimodal(
-        documento_alias="componente_unidad",
-        pdf_bytes=pdf_reducido,
-        catalogo=catalogo,
-        modelo=modelo_multimodal,
-        tipo_unidad=tipo_unidad,
-        consecutivo=int(consecutivo),
-    )
-
-    alcance = str(mm["Alcance documental"])
-    relacion = str(mm["Relación con la unidad"])
-    coincide = bool(mm["Coincide catálogo"])
-
-    # Salvaguarda determinista: un parcial/extracto no recibe el código de un
-    # documento completo, aunque el modelo haya relacionado correctamente el
-    # tipo documental.
-    if alcance == "parcial_extracto":
-        coincide = False
-
-    mapa_roles = {
-        "representante_unidad": "Posible representante de la unidad",
-        "componente_unidad": "Componente de la misma unidad",
-        "documento_independiente": (
-            "Posible documento con código propio"
-            if coincide
-            else "Documento independiente sin equivalencia suficiente"
-        ),
-        "soporte": "Soporte / fuera de catálogo",
-        "indeterminado": "Relación indeterminada",
-    }
-
-    return {
-        "Ruta utilizada": "Multimodal contextual",
-        "Motivo de ruta": (
-            "Se evalúan identidad, alcance y función documental dentro "
-            "de la unidad antes de permitir una codificación."
-        ),
-        "Título detectado": str(mm["Título detectado"]),
-        "Alcance documental": alcance,
-        "Relación con la unidad": relacion,
-        "Concepto relacionado": str(mm["Concepto relacionado"]),
-        "Código relacionado": str(mm["Código relacionado"]),
-        "Coincide catálogo": coincide,
-        "Concepto propuesto": (
-            str(mm["Concepto propuesto"]) if coincide else ""
-        ),
-        "Código de catálogo": (
-            str(mm["Código de catálogo"]) if coincide else ""
-        ),
-        "Confianza (%)": float(mm["Confianza (%)"]),
-        "Rol propuesto en la unidad": mapa_roles.get(
-            relacion,
-            "Relación indeterminada",
-        ),
-        "Evidencia": str(mm["Evidencia"]),
-        "Modelo": str(mm["Modelo"]),
-        "Costo (USD)": float(mm["Costo (USD)"]),
-        "Tiempo (s)": float(mm["Tiempo (s)"]),
-        "Páginas usadas": ", ".join(str(p) for p in paginas),
     }
 
 
@@ -210,6 +68,268 @@ def _codigo_sin_extension(codigo: str) -> str:
     return valor
 
 
+def _codigo_unidad(
+    procedimiento: str,
+    consecutivo: int,
+) -> str:
+    return f"EJE_{procedimiento.upper()}_EST_{int(consecutivo)}"
+
+
+def _paginas_contexto(total_paginas: int) -> list[int]:
+    """
+    Usa pocas páginas, pero incorpora el final cuando el documento es largo.
+    """
+    total = int(total_paginas)
+
+    if total <= 0:
+        return []
+    if total <= 4:
+        return list(range(1, total + 1))
+
+    return [1, 2, total - 1, total]
+
+
+def _extraer_pdf_paginas(
+    contenido_zip: bytes,
+    ruta_pdf: str,
+    paginas: list[int],
+) -> bytes:
+    return extraer_paginas_pdf_del_zip(
+        contenido_zip,
+        ruta_pdf,
+        paginas,
+    )
+
+
+def analizar_componente_unidad(
+    contenido_zip: bytes,
+    ruta_pdf: str,
+    catalogo: pd.DataFrame,
+    procedimiento: str,
+    modelo_multimodal: str,
+    tipo_unidad: str = "Estimación",
+    consecutivo: int = 1,
+) -> dict:
+    """
+    Flujo en dos etapas.
+
+    ETAPA 1
+    Identifica el documento y su posible equivalencia con el catálogo,
+    sin contexto de carpeta ni nombre real.
+
+    ETAPA 2
+    Solo si hace falta:
+    - si apunta al código de la propia unidad, decide si es representante,
+      componente o soporte;
+    - si apunta a un código propio distinto, valida únicamente si el archivo
+      es completo o un parcial/extracto.
+
+    La segunda etapa nunca puede cambiar un código propio válido por el código
+    de la estimación.
+    """
+    diagnostico = diagnosticar_componente_pdf(
+        contenido_zip,
+        ruta_pdf,
+    )
+
+    paginas_iniciales = list(
+        range(
+            1,
+            min(
+                int(diagnostico["Páginas totales"]),
+                PAGINAS_INICIALES,
+            )
+            + 1,
+        )
+    )
+
+    pdf_inicial = _extraer_pdf_paginas(
+        contenido_zip,
+        ruta_pdf,
+        paginas_iniciales,
+    )
+
+    etapa1 = clasificar_pdf_multimodal(
+        documento_alias="componente_unidad",
+        pdf_bytes=pdf_inicial,
+        catalogo=catalogo,
+        modelo=modelo_multimodal,
+    )
+
+    titulo = str(etapa1["Título detectado"])
+    concepto_inicial = str(etapa1["Resultado Ruta B"])
+    codigo_inicial = str(etapa1["Código Ruta B"])
+    coincide_inicial = bool(etapa1["Coincide catálogo"])
+    confianza_inicial = float(etapa1["Confianza B"])
+    evidencia_inicial = str(etapa1["Evidencia B"])
+
+    costo = float(etapa1["Costo B (USD)"])
+    tiempo = float(etapa1["Tiempo B (s)"])
+
+    codigo_unidad = _codigo_unidad(
+        procedimiento,
+        consecutivo,
+    )
+
+    alcance = "no_evaluado"
+    relacion = "soporte"
+    validacion_secundaria = "No requerida"
+    evidencia_secundaria = ""
+    confianza_final = confianza_inicial
+
+    concepto_relacionado = (
+        concepto_inicial if coincide_inicial else ""
+    )
+    codigo_relacionado = (
+        codigo_inicial if coincide_inicial else ""
+    )
+
+    coincide_final = False
+    concepto_final = ""
+    codigo_final = ""
+
+    if not coincide_inicial:
+        rol = "Soporte / fuera de catálogo"
+        relacion = "soporte"
+
+    elif (
+        _codigo_sin_extension(codigo_inicial).upper()
+        == codigo_unidad.upper()
+    ):
+        paginas_contexto = _paginas_contexto(
+            diagnostico["Páginas totales"]
+        )
+        pdf_contexto = _extraer_pdf_paginas(
+            contenido_zip,
+            ruta_pdf,
+            paginas_contexto,
+        )
+
+        etapa2 = analizar_relacion_unidad_multimodal(
+            documento_alias="componente_unidad",
+            pdf_bytes=pdf_contexto,
+            modelo=modelo_multimodal,
+            tipo_unidad=tipo_unidad,
+            consecutivo=int(consecutivo),
+            identidad_detectada=titulo,
+        )
+
+        relacion = str(etapa2["Relación con la unidad"])
+        confianza_relacion = float(
+            etapa2["Confianza relación (%)"]
+        )
+        confianza_final = min(
+            confianza_inicial,
+            confianza_relacion,
+        )
+        evidencia_secundaria = str(
+            etapa2["Evidencia relación"]
+        )
+        costo += float(etapa2["Costo relación (USD)"])
+        tiempo += float(etapa2["Tiempo relación (s)"])
+        validacion_secundaria = "Relación con la unidad"
+
+        if relacion == "representante_unidad":
+            coincide_final = True
+            concepto_final = concepto_inicial
+            codigo_final = codigo_inicial
+            rol = "Posible representante de la unidad"
+        elif relacion == "componente_unidad":
+            rol = "Componente de la misma unidad"
+        elif relacion == "soporte":
+            rol = "Soporte / fuera de catálogo"
+        else:
+            rol = "Revisión necesaria"
+
+    else:
+        paginas_contexto = _paginas_contexto(
+            diagnostico["Páginas totales"]
+        )
+        pdf_contexto = _extraer_pdf_paginas(
+            contenido_zip,
+            ruta_pdf,
+            paginas_contexto,
+        )
+
+        etapa2 = validar_integridad_documental_multimodal(
+            documento_alias="componente_unidad",
+            pdf_bytes=pdf_contexto,
+            modelo=modelo_multimodal,
+            concepto_objetivo=concepto_inicial,
+            identidad_detectada=titulo,
+        )
+
+        alcance = str(etapa2["Alcance documental"])
+        confianza_alcance = float(
+            etapa2["Confianza alcance (%)"]
+        )
+        confianza_final = min(
+            confianza_inicial,
+            confianza_alcance,
+        )
+        evidencia_secundaria = str(
+            etapa2["Evidencia alcance"]
+        )
+        costo += float(etapa2["Costo alcance (USD)"])
+        tiempo += float(etapa2["Tiempo alcance (s)"])
+        validacion_secundaria = "Integridad documental"
+        relacion = "documento_independiente"
+
+        if alcance == "completo":
+            coincide_final = True
+            concepto_final = concepto_inicial
+            codigo_final = codigo_inicial
+            rol = "Posible documento con código propio"
+        elif alcance == "parcial_extracto":
+            rol = "Soporte / extracto de otro documento"
+        else:
+            relacion = "indeterminado"
+            rol = "Revisión necesaria"
+
+    if evidencia_secundaria:
+        evidencia = (
+            f"Etapa 1: {evidencia_inicial} "
+            f"Validación secundaria: {evidencia_secundaria}"
+        )
+    else:
+        evidencia = evidencia_inicial
+
+    paginas_usadas = ", ".join(
+        str(p)
+        for p in _paginas_contexto(
+            diagnostico["Páginas totales"]
+        )
+    )
+
+    return {
+        "Ruta utilizada": (
+            "Multimodal: clasificación inicial + validación selectiva"
+        ),
+        "Motivo de ruta": (
+            "La clasificación inicial conserva la identidad documental; "
+            "la segunda etapa solo valida relación o integridad cuando aplica."
+        ),
+        "Título detectado": titulo,
+        "Clasificación inicial": concepto_inicial,
+        "Código inicial": codigo_inicial,
+        "Validación secundaria": validacion_secundaria,
+        "Alcance documental": alcance,
+        "Relación con la unidad": relacion,
+        "Concepto relacionado": concepto_relacionado,
+        "Código relacionado": codigo_relacionado,
+        "Coincide catálogo": coincide_final,
+        "Concepto propuesto": concepto_final,
+        "Código de catálogo": codigo_final,
+        "Confianza (%)": confianza_final,
+        "Rol propuesto en la unidad": rol,
+        "Evidencia": evidencia,
+        "Modelo": str(etapa1["Modelo B"]),
+        "Costo (USD)": costo,
+        "Tiempo (s)": tiempo,
+        "Páginas usadas": paginas_usadas,
+    }
+
+
 def analizar_unidad_completa(
     contenido_zip: bytes,
     archivos_pdf: pd.DataFrame,
@@ -218,14 +338,10 @@ def analizar_unidad_completa(
     modelo_multimodal: str,
     tipo_unidad: str,
     consecutivo: int,
-    umbral_jev: float = UMBRAL_JEV,
     on_progress=None,
 ) -> pd.DataFrame:
     """
-    Analiza todos los PDF directos de una unidad documental.
-
-    Cada archivo se analiza de forma independiente y con alias neutro.
-    El nombre real y la ruta nunca se envían al modelo.
+    Analiza todos los PDF directos de una sola unidad documental.
     """
     resultados = []
     total = len(archivos_pdf)
@@ -244,7 +360,6 @@ def analizar_unidad_completa(
                 catalogo=catalogo,
                 procedimiento=procedimiento,
                 modelo_multimodal=modelo_multimodal,
-                umbral_jev=umbral_jev,
                 tipo_unidad=tipo_unidad,
                 consecutivo=consecutivo,
             )
@@ -263,14 +378,17 @@ def analizar_unidad_completa(
                 "Ruta utilizada": "Error",
                 "Motivo de ruta": "",
                 "Título detectado": "",
-                "Coincide catálogo": False,
-                "Concepto propuesto": "",
-                "Código de catálogo": "",
-                "Confianza (%)": 0.0,
+                "Clasificación inicial": "",
+                "Código inicial": "",
+                "Validación secundaria": "",
                 "Alcance documental": "indeterminado",
                 "Relación con la unidad": "indeterminado",
                 "Concepto relacionado": "",
                 "Código relacionado": "",
+                "Coincide catálogo": False,
+                "Concepto propuesto": "",
+                "Código de catálogo": "",
+                "Confianza (%)": 0.0,
                 "Rol propuesto en la unidad": "No analizado",
                 "Evidencia": "",
                 "Modelo": "",
@@ -294,18 +412,22 @@ def agrupar_resultados_unidad(
     consecutivo: int,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """
-    Consolida los componentes de una unidad usando relación y alcance.
+    Consolida resultados finales.
 
-    Un parcial/extracto nunca recibe automáticamente el código de un documento
-    completo. Los componentes de la estimación se agrupan bajo el código de la
-    unidad, pero solo un posible representante queda como candidato a recibirlo.
+    El orden de prioridad es:
+    1. código propio completo;
+    2. representante de la unidad;
+    3. componente de la unidad;
+    4. soporte / extracto;
+    5. revisión.
     """
     if resultados.empty:
         return resultados.copy(), pd.DataFrame()
 
     salida = resultados.copy()
-    codigo_unidad = (
-        f"EJE_{procedimiento.upper()}_EST_{int(consecutivo)}"
+    codigo_unidad = _codigo_unidad(
+        procedimiento,
+        consecutivo,
     )
 
     grupos = []
@@ -319,14 +441,51 @@ def agrupar_resultados_unidad(
             acciones.append("Revisar error")
             continue
 
-        alcance = str(
-            fila.get("Alcance documental", "indeterminado")
-        )
+        coincide = bool(fila.get("Coincide catálogo", False))
+        codigo_final = str(
+            fila.get("Código de catálogo", "")
+        ).strip()
         relacion = str(
             fila.get("Relación con la unidad", "indeterminado")
         )
-        coincide = bool(fila.get("Coincide catálogo", False))
-        codigo = str(fila.get("Código de catálogo", "")).strip()
+        alcance = str(
+            fila.get("Alcance documental", "no_evaluado")
+        )
+
+        if (
+            coincide
+            and codigo_final
+            and _codigo_sin_extension(codigo_final).upper()
+            != codigo_unidad.upper()
+        ):
+            grupos.append(_codigo_sin_extension(codigo_final))
+            relaciones.append("Documento con identidad propia")
+            acciones.append(
+                f"Codificación propuesta: {codigo_final}"
+            )
+            continue
+
+        if (
+            coincide
+            and codigo_final
+            and _codigo_sin_extension(codigo_final).upper()
+            == codigo_unidad.upper()
+            and relacion == "representante_unidad"
+        ):
+            grupos.append(codigo_unidad)
+            relaciones.append("Posible representante de la unidad")
+            acciones.append(
+                "Candidato a recibir código de la unidad"
+            )
+            continue
+
+        if relacion == "componente_unidad":
+            grupos.append(codigo_unidad)
+            relaciones.append(
+                "Componente de la misma unidad lógica"
+            )
+            acciones.append("Conservar nombre original")
+            continue
 
         if alcance == "parcial_extracto":
             grupos.append("Soporte / fuera de catálogo")
@@ -334,37 +493,15 @@ def agrupar_resultados_unidad(
             acciones.append("Conservar nombre original")
             continue
 
-        if relacion == "representante_unidad":
-            grupos.append(codigo_unidad)
-            relaciones.append("Posible representante de la unidad")
-            acciones.append("Candidato a recibir código de la unidad")
-            continue
-
-        if relacion == "componente_unidad":
-            grupos.append(codigo_unidad)
-            relaciones.append("Componente de la misma unidad lógica")
+        if relacion == "soporte":
+            grupos.append("Soporte / fuera de catálogo")
+            relaciones.append("Componente de soporte")
             acciones.append("Conservar nombre original")
             continue
 
-        if (
-            relacion == "documento_independiente"
-            and coincide
-            and codigo
-        ):
-            grupos.append(_codigo_sin_extension(codigo))
-            relaciones.append("Documento con identidad propia")
-            acciones.append(f"Codificación propuesta: {codigo}")
-            continue
-
-        if relacion == "indeterminado":
-            grupos.append("Revisión necesaria")
-            relaciones.append("Relación indeterminada")
-            acciones.append("Revisión manual")
-            continue
-
-        grupos.append("Soporte / fuera de catálogo")
-        relaciones.append("Componente de soporte")
-        acciones.append("Conservar nombre original")
+        grupos.append("Revisión necesaria")
+        relaciones.append("Relación indeterminada")
+        acciones.append("Revisión manual")
 
     salida["Grupo lógico"] = grupos
     salida["Relación consolidada"] = relaciones
@@ -378,11 +515,6 @@ def agrupar_resultados_unidad(
         sort=False,
     ):
         archivos = list(bloque["Archivo"].astype(str))
-        codigos = [
-            str(valor)
-            for valor in bloque["Código de catálogo"].astype(str)
-            if str(valor).strip()
-        ]
 
         if grupo == codigo_unidad:
             representantes = int(
@@ -391,7 +523,12 @@ def agrupar_resultados_unidad(
                     == "representante_unidad"
                 ).sum()
             )
-            componentes = len(bloque) - representantes
+            componentes = int(
+                (
+                    bloque["Relación con la unidad"]
+                    == "componente_unidad"
+                ).sum()
+            )
 
             if representantes == 1:
                 estado = (
@@ -408,6 +545,9 @@ def agrupar_resultados_unidad(
                     "Componentes asociados a la unidad; "
                     "representante pendiente"
                 )
+
+            codigo_asociado = f"{codigo_unidad}.pdf"
+
         elif grupo == "Soporte / fuera de catálogo":
             parciales = int(
                 (
@@ -416,31 +556,41 @@ def agrupar_resultados_unidad(
                 ).sum()
             )
             estado = (
-                f"Conservar como soporte; {parciales} parcial(es)/extracto(s)"
+                f"Conservar como soporte; "
+                f"{parciales} parcial(es)/extracto(s)"
             )
-        elif grupo in ("Error de análisis", "Revisión necesaria"):
+            codigo_asociado = ""
+
+        elif grupo in (
+            "Error de análisis",
+            "Revisión necesaria",
+        ):
             estado = "Revisión necesaria"
+            codigo_asociado = ""
+
         elif len(bloque) > 1:
             estado = (
                 "Varios archivos proponen el mismo código; "
                 "revisar duplicado, variante o documento compuesto"
             )
+            codigo_asociado = str(
+                bloque.iloc[0]["Código de catálogo"]
+            )
+
         else:
             estado = "Documento con código propio candidato"
+            codigo_asociado = str(
+                bloque.iloc[0]["Código de catálogo"]
+            )
 
         resumen_registros.append(
             {
                 "Grupo lógico": grupo,
                 "Archivos": len(bloque),
                 "Componentes": " | ".join(archivos),
-                "Código asociado": (
-                    f"{codigo_unidad}.pdf"
-                    if grupo == codigo_unidad
-                    else (codigos[0] if codigos else "")
-                ),
+                "Código asociado": codigo_asociado,
                 "Estado del grupo": estado,
             }
         )
 
-    resumen = pd.DataFrame(resumen_registros)
-    return salida, resumen
+    return salida, pd.DataFrame(resumen_registros)
