@@ -248,3 +248,189 @@ def analizar_componente_unidad(
             str(p) for p in diagnostico["Páginas evaluadas"]
         ),
     }
+
+
+
+def _codigo_sin_extension(codigo: str) -> str:
+    valor = str(codigo).strip()
+    if valor.lower().endswith(".pdf"):
+        return valor[:-4]
+    return valor
+
+
+def analizar_unidad_completa(
+    contenido_zip: bytes,
+    archivos_pdf: pd.DataFrame,
+    catalogo: pd.DataFrame,
+    procedimiento: str,
+    modelo_multimodal: str,
+    umbral_jev: float = UMBRAL_JEV,
+    on_progress=None,
+) -> pd.DataFrame:
+    """
+    Analiza todos los PDF directos de una unidad documental.
+
+    Cada archivo se analiza de forma independiente y con alias neutro.
+    El nombre real y la ruta nunca se envían al modelo.
+    """
+    resultados = []
+    total = len(archivos_pdf)
+
+    for posicion, (_, fila) in enumerate(
+        archivos_pdf.reset_index(drop=True).iterrows(),
+        start=1,
+    ):
+        archivo = str(fila["Archivo"])
+        ruta_pdf = str(fila["Ruta original"])
+
+        try:
+            resultado = analizar_componente_unidad(
+                contenido_zip=contenido_zip,
+                ruta_pdf=ruta_pdf,
+                catalogo=catalogo,
+                procedimiento=procedimiento,
+                modelo_multimodal=modelo_multimodal,
+                umbral_jev=umbral_jev,
+            )
+
+            registro = {
+                "Archivo": archivo,
+                "Ruta original": ruta_pdf,
+                **resultado,
+                "Error": "",
+            }
+
+        except Exception as error:
+            registro = {
+                "Archivo": archivo,
+                "Ruta original": ruta_pdf,
+                "Ruta utilizada": "Error",
+                "Motivo de ruta": "",
+                "Título detectado": "",
+                "Coincide catálogo": False,
+                "Concepto propuesto": "",
+                "Código de catálogo": "",
+                "Confianza (%)": 0.0,
+                "Rol propuesto en la unidad": "No analizado",
+                "Evidencia": "",
+                "Modelo": "",
+                "Costo (USD)": 0.0,
+                "Tiempo (s)": 0.0,
+                "Páginas usadas": "",
+                "Error": str(error),
+            }
+
+        resultados.append(registro)
+
+        if on_progress is not None:
+            on_progress(posicion, total, archivo)
+
+    return pd.DataFrame(resultados)
+
+
+def agrupar_resultados_unidad(
+    resultados: pd.DataFrame,
+    procedimiento: str,
+    consecutivo: int,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """
+    Agrupa clasificaciones individuales para interpretar relaciones internas.
+
+    No elige todavía un archivo representativo. Si varios componentes apuntan
+    al código de la propia estimación, quedan agrupados como partes de la misma
+    unidad lógica y se marca que la representación está pendiente.
+    """
+    if resultados.empty:
+        return resultados.copy(), pd.DataFrame()
+
+    salida = resultados.copy()
+    codigo_unidad = (
+        f"EJE_{procedimiento.upper()}_EST_{int(consecutivo)}"
+    )
+
+    grupos = []
+    relaciones = []
+    acciones = []
+
+    for _, fila in salida.iterrows():
+        if str(fila.get("Error", "")).strip():
+            grupos.append("Error de análisis")
+            relaciones.append("No determinada")
+            acciones.append("Revisar error")
+            continue
+
+        coincide = bool(fila["Coincide catálogo"])
+        codigo = str(fila["Código de catálogo"]).strip()
+
+        if not coincide or not codigo:
+            grupos.append("Soporte / fuera de catálogo")
+            relaciones.append("Componente de soporte")
+            acciones.append("Conservar nombre original")
+            continue
+
+        if _codigo_sin_extension(codigo).upper() == codigo_unidad.upper():
+            grupos.append(codigo_unidad)
+            relaciones.append("Componente de la misma unidad lógica")
+            acciones.append(
+                "Pendiente elegir archivo representativo"
+            )
+        else:
+            grupos.append(_codigo_sin_extension(codigo))
+            relaciones.append("Documento con identidad propia")
+            acciones.append(
+                f"Codificación propuesta: {codigo}"
+            )
+
+    salida["Grupo lógico"] = grupos
+    salida["Relación consolidada"] = relaciones
+    salida["Acción provisional"] = acciones
+
+    resumen_registros = []
+
+    for grupo, bloque in salida.groupby(
+        "Grupo lógico",
+        dropna=False,
+        sort=False,
+    ):
+        archivos = list(bloque["Archivo"].astype(str))
+        codigos = [
+            str(valor)
+            for valor in bloque["Código de catálogo"].astype(str)
+            if str(valor).strip()
+        ]
+
+        if grupo == codigo_unidad:
+            if len(bloque) > 1:
+                estado = (
+                    "Varios componentes asociados a la misma unidad; "
+                    "representante pendiente"
+                )
+            else:
+                estado = (
+                    "Un componente asociado a la unidad; "
+                    "representante pendiente de validar"
+                )
+        elif grupo == "Soporte / fuera de catálogo":
+            estado = "Conservar como soporte"
+        elif grupo == "Error de análisis":
+            estado = "Revisión necesaria"
+        elif len(bloque) > 1:
+            estado = (
+                "Varios archivos proponen el mismo código; "
+                "revisar duplicado, variante o documento compuesto"
+            )
+        else:
+            estado = "Documento con código propio candidato"
+
+        resumen_registros.append(
+            {
+                "Grupo lógico": grupo,
+                "Archivos": len(bloque),
+                "Componentes": " | ".join(archivos),
+                "Código asociado": codigos[0] if codigos else "",
+                "Estado del grupo": estado,
+            }
+        )
+
+    resumen = pd.DataFrame(resumen_registros)
+    return salida, resumen
