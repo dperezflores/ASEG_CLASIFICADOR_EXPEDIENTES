@@ -6,7 +6,6 @@ from services.openai_multimodal_service import (
     MODELOS,
     openai_configurado,
 )
-from services.jev_classifier_service import jev_configurado
 from services.structural_analysis_service import (
     construir_mapa_estructural,
     obtener_archivos_unidad,
@@ -31,12 +30,6 @@ if not openai_configurado():
     )
     st.stop()
 
-if not jev_configurado():
-    st.error(
-        "La API key de TypeSafe/Jev no está configurada en Streamlit Secrets."
-    )
-    st.stop()
-
 inventario = st.session_state["inventario"]
 contenido_zip = st.session_state["contenido_zip"]
 procedimiento = st.session_state["procedimiento"]
@@ -46,9 +39,10 @@ mapa = construir_mapa_estructural(inventario)
 estimaciones = obtener_estimaciones_detectadas(mapa)
 
 st.info(
-    "Esta etapa analiza todos los PDF directos de una sola estimación y, "
-    "después, consolida los resultados. Todavía no elige automáticamente "
-    "qué archivo representará a la unidad ni divide documentos compuestos."
+    "Esta etapa analiza todos los PDF directos de una sola estimación y "
+    "separa identidad, alcance documental y función dentro de la unidad. "
+    "Un parcial o extracto no recibe automáticamente el código del documento "
+    "completo. Todavía no divide documentos compuestos."
 )
 
 if estimaciones.empty:
@@ -89,9 +83,9 @@ c2.metric("PDF directos", len(archivos_pdf))
 c3.metric("Procedimiento", procedimiento)
 
 st.caption(
-    "Cada PDF se analiza individualmente con alias neutro; la IA no recibe "
-    "el nombre real ni la ruta. Después Python agrupa los resultados por "
-    "relación documental y código propuesto."
+    "Cada PDF se analiza con alias neutro; la IA no recibe el nombre real "
+    "ni la ruta. Después Python consolida identidad, alcance, relación con "
+    "la unidad y equivalencia real con el catálogo."
 )
 
 with st.expander("Ver componentes que se analizarán"):
@@ -108,7 +102,7 @@ with st.expander("Ver componentes que se analizarán"):
     )
 
 modelo = st.selectbox(
-    "Modelo multimodal de respaldo",
+    "Modelo multimodal",
     options=list(MODELOS.keys()),
     index=0,
     format_func=lambda m: MODELOS[m]["label"],
@@ -138,6 +132,8 @@ if st.button(
             catalogo=catalogo,
             procedimiento=procedimiento,
             modelo_multimodal=modelo,
+            tipo_unidad="Estimación",
+            consecutivo=int(unidad["Consecutivo"]),
             on_progress=actualizar_progreso,
         )
 
@@ -196,8 +192,10 @@ if (
             [
                 "Archivo",
                 "Título detectado",
+                "Alcance documental",
+                "Relación con la unidad",
+                "Concepto relacionado",
                 "Coincide catálogo",
-                "Concepto propuesto",
                 "Código de catálogo",
                 "Confianza (%)",
                 "Relación consolidada",
@@ -214,7 +212,13 @@ if (
         },
     )
 
-    st.caption(f"Costo IA acumulado de esta ejecución: USD {costo:.6f}")
+    parciales = int(
+        (detalle["Alcance documental"] == "parcial_extracto").sum()
+    )
+    st.caption(
+        f"Costo IA acumulado de esta ejecución: USD {costo:.6f} · "
+        f"Parciales/extractos detectados: {parciales}"
+    )
 
     st.subheader("3. Agrupación lógica de la unidad")
 
@@ -263,6 +267,10 @@ if (
                     "Archivo",
                     "Ruta utilizada",
                     "Motivo de ruta",
+                    "Alcance documental",
+                    "Relación con la unidad",
+                    "Concepto relacionado",
+                    "Código relacionado",
                     "Evidencia",
                     "Modelo",
                     "Páginas usadas",
