@@ -8,8 +8,8 @@ import pandas as pd
 
 from services.evaluation_service import extraer_paginas_pdf_del_zip
 from services.openai_multimodal_service import (
-    analizar_relacion_unidad_multimodal,
     clasificar_pdf_multimodal,
+    comparar_candidatos_unidad_multimodal,
     validar_integridad_documental_multimodal,
 )
 
@@ -196,50 +196,12 @@ def analizar_componente_unidad(
         _codigo_sin_extension(codigo_inicial).upper()
         == codigo_unidad.upper()
     ):
-        paginas_contexto = _paginas_contexto(
-            diagnostico["Páginas totales"]
-        )
-        pdf_contexto = _extraer_pdf_paginas(
-            contenido_zip,
-            ruta_pdf,
-            paginas_contexto,
-        )
-
-        etapa2 = analizar_relacion_unidad_multimodal(
-            documento_alias="componente_unidad",
-            pdf_bytes=pdf_contexto,
-            modelo=modelo_multimodal,
-            tipo_unidad=tipo_unidad,
-            consecutivo=int(consecutivo),
-            identidad_detectada=titulo,
-        )
-
-        relacion = str(etapa2["Relación con la unidad"])
-        confianza_relacion = float(
-            etapa2["Confianza relación (%)"]
-        )
-        confianza_final = min(
-            confianza_inicial,
-            confianza_relacion,
-        )
-        evidencia_secundaria = str(
-            etapa2["Evidencia relación"]
-        )
-        costo += float(etapa2["Costo relación (USD)"])
-        tiempo += float(etapa2["Tiempo relación (s)"])
-        validacion_secundaria = "Relación con la unidad"
-
-        if relacion == "representante_unidad":
-            coincide_final = True
-            concepto_final = concepto_inicial
-            codigo_final = codigo_inicial
-            rol = "Posible representante de la unidad"
-        elif relacion == "componente_unidad":
-            rol = "Componente de la misma unidad"
-        elif relacion == "soporte":
-            rol = "Soporte / fuera de catálogo"
-        else:
-            rol = "Revisión necesaria"
+        # No se decide el papel de este archivo de forma aislada.
+        # Todos los candidatos al código de la unidad se comparan juntos
+        # después de terminar la clasificación individual.
+        relacion = "candidato_unidad"
+        validacion_secundaria = "Pendiente comparación conjunta"
+        rol = "Candidato a comparación de unidad"
 
     else:
         paginas_contexto = _paginas_contexto(
@@ -404,6 +366,232 @@ def analizar_unidad_completa(
             on_progress(posicion, total, archivo)
 
     return pd.DataFrame(resultados)
+
+
+
+def consolidar_candidatos_unidad(
+    contenido_zip: bytes,
+    resultados: pd.DataFrame,
+    procedimiento: str,
+    consecutivo: int,
+    modelo_multimodal: str,
+    tipo_unidad: str = "Estimación",
+) -> tuple[pd.DataFrame, pd.DataFrame, dict]:
+    """
+    Tercera etapa: compara simultáneamente todos los archivos cuya
+    clasificación inicial apunta al código de la propia unidad.
+
+    No toca documentos con código propio distinto ni soportes ya descartados.
+    """
+    if resultados.empty:
+        return resultados.copy(), pd.DataFrame(), {}
+
+    salida = resultados.copy()
+
+    for columna, valor in (
+        ("Relación comparativa", ""),
+        ("Confianza comparativa (%)", 0.0),
+        ("Evidencia comparativa", ""),
+    ):
+        if columna not in salida.columns:
+            salida[columna] = valor
+
+    codigo_unidad = _codigo_unidad(
+        procedimiento,
+        consecutivo,
+    )
+
+    mascara = (
+        salida["Código inicial"]
+        .astype(str)
+        .apply(_codigo_sin_extension)
+        .str.upper()
+        == codigo_unidad.upper()
+    ) & (
+        salida["Error"].astype(str).str.strip() == ""
+    )
+
+    candidatos_df = salida[mascara].copy()
+
+    if candidatos_df.empty:
+        return salida, pd.DataFrame(), {
+            "Estado": "Sin candidatos a comparación",
+            "Representante": "",
+            "Evidencia unidad": "",
+            "Costo comparación (USD)": 0.0,
+            "Tiempo comparación (s)": 0.0,
+            "Modelo comparación": "",
+        }
+
+    candidatos = []
+    alias_a_indice = {}
+    alias_a_archivo = {}
+
+    for numero, (indice, fila) in enumerate(
+        candidatos_df.iterrows(),
+        start=1,
+    ):
+        alias = f"candidate_{numero:02d}"
+        ruta_pdf = str(fila["Ruta original"])
+
+        diagnostico = diagnosticar_componente_pdf(
+            contenido_zip,
+            ruta_pdf,
+        )
+        paginas = _paginas_contexto(
+            diagnostico["Páginas totales"]
+        )
+        pdf_reducido = _extraer_pdf_paginas(
+            contenido_zip,
+            ruta_pdf,
+            paginas,
+        )
+
+        candidatos.append(
+            {
+                "alias": alias,
+                "pdf_bytes": pdf_reducido,
+                "titulo": str(fila["Título detectado"]),
+                "clasificacion": str(
+                    fila["Clasificación inicial"]
+                ),
+                "evidencia": str(fila["Evidencia"]),
+            }
+        )
+        alias_a_indice[alias] = indice
+        alias_a_archivo[alias] = str(fila["Archivo"])
+
+    comparacion = comparar_candidatos_unidad_multimodal(
+        candidatos=candidatos,
+        modelo=modelo_multimodal,
+        tipo_unidad=tipo_unidad,
+        consecutivo=int(consecutivo),
+    )
+
+    filas_comparacion = []
+
+    for decision in comparacion["Decisiones"]:
+        alias = str(decision["Alias"])
+        indice = alias_a_indice[alias]
+        relacion = str(decision["Relación comparativa"])
+        confianza = float(
+            decision["Confianza comparativa (%)"]
+        )
+        evidencia = str(decision["Evidencia comparativa"])
+
+        salida.at[indice, "Relación comparativa"] = relacion
+        salida.at[
+            indice,
+            "Confianza comparativa (%)",
+        ] = confianza
+        salida.at[
+            indice,
+            "Evidencia comparativa",
+        ] = evidencia
+        salida.at[
+            indice,
+            "Relación con la unidad",
+        ] = relacion
+        salida.at[
+            indice,
+            "Validación secundaria",
+        ] = "Comparación conjunta de unidad"
+        salida.at[
+            indice,
+            "Confianza (%)",
+        ] = min(
+            float(salida.at[indice, "Confianza (%)"]),
+            confianza,
+        )
+
+        if relacion == "representante_unidad":
+            salida.at[indice, "Coincide catálogo"] = True
+            salida.at[
+                indice,
+                "Concepto propuesto",
+            ] = str(
+                salida.at[indice, "Clasificación inicial"]
+            )
+            salida.at[
+                indice,
+                "Código de catálogo",
+            ] = str(
+                salida.at[indice, "Código inicial"]
+            )
+            salida.at[
+                indice,
+                "Rol propuesto en la unidad",
+            ] = "Representante de la unidad"
+
+        elif relacion == "componente_unidad":
+            salida.at[indice, "Coincide catálogo"] = False
+            salida.at[indice, "Concepto propuesto"] = ""
+            salida.at[indice, "Código de catálogo"] = ""
+            salida.at[
+                indice,
+                "Rol propuesto en la unidad",
+            ] = "Componente de la misma unidad"
+
+        elif relacion == "soporte":
+            salida.at[indice, "Coincide catálogo"] = False
+            salida.at[indice, "Concepto propuesto"] = ""
+            salida.at[indice, "Código de catálogo"] = ""
+            salida.at[
+                indice,
+                "Rol propuesto en la unidad",
+            ] = "Soporte / fuera de catálogo"
+
+        else:
+            salida.at[indice, "Coincide catálogo"] = False
+            salida.at[indice, "Concepto propuesto"] = ""
+            salida.at[indice, "Código de catálogo"] = ""
+            salida.at[
+                indice,
+                "Rol propuesto en la unidad",
+            ] = "Revisión necesaria"
+
+        filas_comparacion.append(
+            {
+                "Alias": alias,
+                "Archivo": alias_a_archivo[alias],
+                "Título detectado": str(
+                    salida.at[indice, "Título detectado"]
+                ),
+                "Clasificación inicial": str(
+                    salida.at[indice, "Clasificación inicial"]
+                ),
+                "Relación comparativa": relacion,
+                "Confianza comparativa (%)": confianza,
+                "Evidencia comparativa": evidencia,
+            }
+        )
+
+    representante_alias = str(comparacion["Representante"])
+    representante_archivo = (
+        ""
+        if representante_alias == "ninguno"
+        else alias_a_archivo.get(representante_alias, "")
+    )
+
+    meta = {
+        "Estado": "Comparación ejecutada",
+        "Candidatos comparados": len(candidatos),
+        "Representante": representante_archivo,
+        "Evidencia unidad": str(
+            comparacion["Evidencia unidad"]
+        ),
+        "Costo comparación (USD)": float(
+            comparacion["Costo comparación (USD)"]
+        ),
+        "Tiempo comparación (s)": float(
+            comparacion["Tiempo comparación (s)"]
+        ),
+        "Modelo comparación": str(
+            comparacion["Modelo comparación"]
+        ),
+    }
+
+    return salida, pd.DataFrame(filas_comparacion), meta
 
 
 def agrupar_resultados_unidad(
