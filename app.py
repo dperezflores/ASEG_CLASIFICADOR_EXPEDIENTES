@@ -32,6 +32,11 @@ paginas = {
             icon="📂",
         ),
         st.Page(
+            "pages/2_Validacion_Contenido.py",
+            title="Validación por contenido",
+            icon="🔬",
+        ),
+        st.Page(
             "pages/2_Diagnostico_PDF.py",
             title="Diagnóstico PDF",
             icon="📄",
