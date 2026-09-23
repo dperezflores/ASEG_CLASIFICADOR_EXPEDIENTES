@@ -22,6 +22,11 @@ paginas = {
             icon="📁",
         ),
         st.Page(
+            "pages/2_Mapa_Estructural.py",
+            title="Mapa estructural",
+            icon="🗂️",
+        ),
+        st.Page(
             "pages/2_Diagnostico_PDF.py",
             title="Diagnóstico PDF",
             icon="📄",
