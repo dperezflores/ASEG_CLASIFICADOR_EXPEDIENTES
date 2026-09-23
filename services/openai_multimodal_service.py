@@ -326,3 +326,219 @@ def clasificar_muestra_multimodal(
         resultados.append(resultado)
 
     return pd.DataFrame(resultados)
+
+
+
+def analizar_componente_unidad_multimodal(
+    documento_alias: str,
+    pdf_bytes: bytes,
+    catalogo: pd.DataFrame,
+    modelo: str,
+    tipo_unidad: str,
+    consecutivo: int,
+) -> dict:
+    """
+    Analiza un componente dentro de una unidad documental.
+
+    A diferencia de clasificar_pdf_multimodal, esta función separa:
+    - identidad documental;
+    - alcance (completo, parcial/extracto o indeterminado);
+    - relación con la unidad;
+    - equivalencia real con un concepto del catálogo.
+
+    El modelo no recibe el nombre real ni la ruta del archivo.
+    """
+    if modelo not in MODELOS:
+        raise OpenAIMultimodalError(f"Modelo no admitido: {modelo}")
+
+    if len(pdf_bytes) >= 50 * 1024 * 1024:
+        raise OpenAIMultimodalError(
+            f"{documento_alias} supera el límite de 50 MB por archivo."
+        )
+
+    opciones, mapa = _crear_opciones(catalogo)
+    enum_opciones = list(mapa.keys())
+
+    prompt = (
+        "Analiza este componente documental de un expediente de obra pública. "
+        "No uses ni infieras nombres de archivo o rutas. El componente se "
+        f"encuentra dentro de una unidad candidata de tipo {tipo_unidad}, "
+        f"consecutivo {int(consecutivo)}.\n\n"
+        "Debes separar cinco decisiones:\n"
+        "1) IDENTIDAD: describe qué documento es por su propia función.\n"
+        "2) ALCANCE: indica si el documento está completo, si es solo una "
+        "parte/extracto de un documento mayor, o si no puede determinarse.\n"
+        "3) RELACIÓN CON LA UNIDAD: determina si funciona como posible "
+        "representante de la unidad, como componente de la misma unidad, "
+        "como documento independiente con identidad propia, como soporte, "
+        "o si es indeterminado.\n"
+        "4) CATÁLOGO: identifica la opción del catálogo más relacionada, si "
+        "existe. Esto NO significa todavía que el código deba asignarse.\n"
+        "5) EQUIVALENCIA: solo marca catalog_equivalent=true cuando ESTE "
+        "archivo, por sí mismo y con el alcance observado, satisface "
+        "documental y funcionalmente el concepto del catálogo.\n\n"
+        "Reglas estrictas:\n"
+        "- Que un archivo mencione una estimación no lo convierte en la "
+        "estimación. Croquis, plantillas, listas de verificación, facturas, "
+        "generadores, fotografías y otros soportes siguen siendo soporte "
+        "salvo que el catálogo contemple expresamente ese documento.\n"
+        "- Hojas, notas o páginas parciales de una bitácora NO equivalen a "
+        "la Bitácora de obra completa. Si solo se observa una parte de la "
+        "bitácora, usa scope=parcial_extracto y catalog_equivalent=false.\n"
+        "- Un documento parcial o extracto no recibe el código del documento "
+        "completo, salvo que el propio concepto del catálogo describa "
+        "expresamente un parcial/extracto.\n"
+        "- Un archivo puede formar parte de la unidad documental sin ser un "
+        "documento independiente del catálogo.\n"
+        "- No elijas una opción solo por similitud temática o palabras "
+        "compartidas.\n\n"
+        "Opciones permitidas del catálogo:\n"
+        + "\n".join(opciones)
+    )
+
+    schema = {
+        "type": "object",
+        "properties": {
+            "detected_title": {"type": "string"},
+            "scope": {
+                "type": "string",
+                "enum": [
+                    "completo",
+                    "parcial_extracto",
+                    "indeterminado",
+                ],
+            },
+            "unit_relation": {
+                "type": "string",
+                "enum": [
+                    "representante_unidad",
+                    "componente_unidad",
+                    "documento_independiente",
+                    "soporte",
+                    "indeterminado",
+                ],
+            },
+            "catalog_option": {
+                "type": "string",
+                "enum": enum_opciones,
+            },
+            "catalog_equivalent": {"type": "boolean"},
+            "confidence": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 100,
+            },
+            "evidence": {"type": "string"},
+        },
+        "required": [
+            "detected_title",
+            "scope",
+            "unit_relation",
+            "catalog_option",
+            "catalog_equivalent",
+            "confidence",
+            "evidence",
+        ],
+        "additionalProperties": False,
+    }
+
+    encoded = base64.b64encode(pdf_bytes).decode("ascii")
+
+    payload = {
+        "model": modelo,
+        "reasoning": {"effort": "low"},
+        "input": [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "input_file",
+                        "filename": f"{documento_alias}.pdf",
+                        "file_data": (
+                            "data:application/pdf;base64," + encoded
+                        ),
+                        "detail": "high",
+                    },
+                    {
+                        "type": "input_text",
+                        "text": prompt,
+                    },
+                ],
+            }
+        ],
+        "text": {
+            "format": {
+                "type": "json_schema",
+                "name": "unit_component_analysis",
+                "strict": True,
+                "schema": schema,
+            }
+        },
+        "max_output_tokens": 700,
+    }
+
+    inicio = time.perf_counter()
+    respuesta = _request_json(
+        "POST",
+        "/responses",
+        payload,
+        timeout=240,
+    )
+    duracion = time.perf_counter() - inicio
+
+    try:
+        resultado = json.loads(_extraer_output_text(respuesta))
+    except json.JSONDecodeError as error:
+        raise OpenAIMultimodalError(
+            "OpenAI devolvió una respuesta que no pudo convertirse a JSON."
+        ) from error
+
+    opcion = resultado.get("catalog_option")
+    if opcion not in mapa:
+        raise OpenAIMultimodalError(
+            "OpenAI devolvió una opción fuera del catálogo permitido."
+        )
+
+    equivalente = bool(resultado["catalog_equivalent"])
+    if opcion == "fuera_catalogo":
+        equivalente = False
+
+    usage = respuesta.get("usage") or {}
+    input_tokens = int(usage.get("input_tokens") or 0)
+    output_tokens = int(usage.get("output_tokens") or 0)
+
+    precios = MODELOS[modelo]
+    costo = (
+        input_tokens / 1_000_000 * precios["input_per_million"]
+        + output_tokens / 1_000_000 * precios["output_per_million"]
+    )
+
+    confianza_raw = float(resultado["confidence"])
+    confianza_pct = (
+        confianza_raw * 100
+        if 0 <= confianza_raw <= 1
+        else confianza_raw
+    )
+
+    return {
+        "Documento": documento_alias,
+        "Título detectado": str(resultado["detected_title"]).strip(),
+        "Alcance documental": str(resultado["scope"]),
+        "Relación con la unidad": str(resultado["unit_relation"]),
+        "Concepto relacionado": mapa[opcion]["concepto"],
+        "Código relacionado": mapa[opcion]["codigo"],
+        "Coincide catálogo": equivalente,
+        "Concepto propuesto": (
+            mapa[opcion]["concepto"] if equivalente else ""
+        ),
+        "Código de catálogo": (
+            mapa[opcion]["codigo"] if equivalente else ""
+        ),
+        "Confianza (%)": round(confianza_pct, 2),
+        "Evidencia": str(resultado["evidence"]).strip(),
+        "Modelo": str(respuesta.get("model") or modelo),
+        "Tokens entrada": input_tokens,
+        "Tokens salida": output_tokens,
+        "Costo (USD)": costo,
+        "Tiempo (s)": duracion,
+    }
