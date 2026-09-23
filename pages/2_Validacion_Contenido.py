@@ -40,10 +40,10 @@ mapa = construir_mapa_estructural(inventario)
 estimaciones = obtener_estimaciones_detectadas(mapa)
 
 st.info(
-    "En esta prueba se analiza un solo archivo a la vez. El nombre real y "
-    "la ruta se muestran únicamente en la interfaz. El análisis separa "
-    "identidad, alcance documental, relación con la unidad y equivalencia "
-    "real con el catálogo."
+    "En esta prueba se analiza un solo archivo a la vez. Primero se realiza "
+    "una clasificación documental independiente. Después, únicamente si "
+    "hace falta, se valida su relación con la unidad o su integridad. "
+    "La segunda etapa no vuelve a elegir libremente otro concepto."
 )
 
 if estimaciones.empty:
@@ -163,6 +163,16 @@ if (
     st.write(f"**Archivo analizado:** {archivo}")
     st.write(f"**Ruta utilizada:** {resultado['Ruta utilizada']}")
     st.write(f"**Título detectado:** {resultado['Título detectado']}")
+    st.write(
+        f"**Clasificación inicial:** {resultado['Clasificación inicial']}"
+    )
+    st.write(
+        f"**Código inicial:** {resultado['Código inicial'] or '—'}"
+    )
+    st.write(
+        f"**Validación secundaria:** "
+        f"{resultado['Validación secundaria']}"
+    )
     st.write(
         f"**Alcance documental:** {resultado['Alcance documental']}"
     )
