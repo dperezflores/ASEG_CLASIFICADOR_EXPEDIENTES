@@ -549,3 +549,272 @@ def analizar_componente_unidad_multimodal(
         "Costo (USD)": costo,
         "Tiempo (s)": duracion,
     }
+
+
+
+def analizar_relacion_unidad_multimodal(
+    documento_alias: str,
+    pdf_bytes: bytes,
+    modelo: str,
+    tipo_unidad: str,
+    consecutivo: int,
+    identidad_detectada: str,
+) -> dict:
+    """
+    Segunda etapa para archivos inicialmente asociados al código de la unidad.
+
+    No vuelve a clasificar contra el catálogo. Solo determina qué función tiene
+    el archivo respecto de la unidad documental ya detectada.
+    """
+    if modelo not in MODELOS:
+        raise OpenAIMultimodalError(f"Modelo no admitido: {modelo}")
+
+    prompt = (
+        "Analiza la función de este archivo dentro de una unidad documental "
+        f"de tipo {tipo_unidad}, consecutivo {int(consecutivo)}. "
+        f"La primera etapa identificó el archivo como: {identidad_detectada}. "
+        "No vuelvas a clasificarlo contra un catálogo y no uses el nombre del "
+        "archivo ni su ruta.\n\n"
+        "Elige exactamente una relación:\n"
+        "- representante_unidad: el archivo funciona como portada, carátula, "
+        "resumen formal o pieza de identificación principal de la unidad y es "
+        "el mejor candidato para portar el código de la unidad cuando esta se "
+        "encuentra fragmentada en varios archivos.\n"
+        "- componente_unidad: el archivo contiene el cuerpo sustantivo propio "
+        "de la unidad, pero no es la pieza de identificación principal.\n"
+        "- soporte: el archivo está relacionado con la unidad, pero cumple una "
+        "función documental distinta y auxiliar. Ejemplos típicos son listas "
+        "de verificación, croquis, plantillas, facturas, números generadores, "
+        "reportes fotográficos, solicitudes de pago u otros anexos de soporte.\n"
+        "- indeterminado: no existe evidencia suficiente para decidir.\n\n"
+        "Regla crítica: mencionar la estimación, incluir conceptos, cantidades "
+        "o datos del contrato no convierte por sí solo al archivo en parte "
+        "sustantiva de la estimación."
+    )
+
+    schema = {
+        "type": "object",
+        "properties": {
+            "unit_relation": {
+                "type": "string",
+                "enum": [
+                    "representante_unidad",
+                    "componente_unidad",
+                    "soporte",
+                    "indeterminado",
+                ],
+            },
+            "confidence": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 100,
+            },
+            "evidence": {"type": "string"},
+        },
+        "required": [
+            "unit_relation",
+            "confidence",
+            "evidence",
+        ],
+        "additionalProperties": False,
+    }
+
+    encoded = base64.b64encode(pdf_bytes).decode("ascii")
+    payload = {
+        "model": modelo,
+        "reasoning": {"effort": "low"},
+        "input": [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "input_file",
+                        "filename": f"{documento_alias}.pdf",
+                        "file_data": (
+                            "data:application/pdf;base64," + encoded
+                        ),
+                        "detail": "high",
+                    },
+                    {
+                        "type": "input_text",
+                        "text": prompt,
+                    },
+                ],
+            }
+        ],
+        "text": {
+            "format": {
+                "type": "json_schema",
+                "name": "unit_relation_validation",
+                "strict": True,
+                "schema": schema,
+            }
+        },
+        "max_output_tokens": 400,
+    }
+
+    inicio = time.perf_counter()
+    respuesta = _request_json(
+        "POST",
+        "/responses",
+        payload,
+        timeout=240,
+    )
+    duracion = time.perf_counter() - inicio
+
+    try:
+        resultado = json.loads(_extraer_output_text(respuesta))
+    except json.JSONDecodeError as error:
+        raise OpenAIMultimodalError(
+            "OpenAI devolvió una respuesta inválida al validar la unidad."
+        ) from error
+
+    usage = respuesta.get("usage") or {}
+    input_tokens = int(usage.get("input_tokens") or 0)
+    output_tokens = int(usage.get("output_tokens") or 0)
+    precios = MODELOS[modelo]
+    costo = (
+        input_tokens / 1_000_000 * precios["input_per_million"]
+        + output_tokens / 1_000_000 * precios["output_per_million"]
+    )
+
+    confianza = float(resultado["confidence"])
+    if 0 <= confianza <= 1:
+        confianza *= 100
+
+    return {
+        "Relación con la unidad": str(resultado["unit_relation"]),
+        "Confianza relación (%)": round(confianza, 2),
+        "Evidencia relación": str(resultado["evidence"]).strip(),
+        "Costo relación (USD)": costo,
+        "Tiempo relación (s)": duracion,
+    }
+
+
+def validar_integridad_documental_multimodal(
+    documento_alias: str,
+    pdf_bytes: bytes,
+    modelo: str,
+    concepto_objetivo: str,
+    identidad_detectada: str,
+) -> dict:
+    """
+    Segunda etapa para un documento con código propio candidato.
+
+    No cambia su identidad. Solo determina si el archivo es una instancia
+    completa del concepto o un parcial/extracto de un documento mayor.
+    """
+    if modelo not in MODELOS:
+        raise OpenAIMultimodalError(f"Modelo no admitido: {modelo}")
+
+    prompt = (
+        "Evalúa exclusivamente la INTEGRIDAD DOCUMENTAL de este archivo. "
+        f"La primera etapa lo identificó como: {identidad_detectada}. "
+        f"El concepto objetivo del catálogo es: {concepto_objetivo}. "
+        "No cambies la identidad documental y no selecciones otro concepto. "
+        "No uses el nombre del archivo ni su ruta.\n\n"
+        "Clasifica el alcance como:\n"
+        "- completo: el archivo constituye por sí mismo una instancia completa "
+        "del concepto objetivo para efectos de identificación documental.\n"
+        "- parcial_extracto: contiene solamente algunas hojas, notas, páginas "
+        "o una sección de un documento mayor. Por ejemplo, algunas notas de "
+        "bitácora incluidas como soporte de una estimación no constituyen la "
+        "Bitácora de obra completa.\n"
+        "- indeterminado: con las páginas disponibles no puede establecerse "
+        "razonablemente si está completo.\n\n"
+        "No confundas un documento corto pero completo con un extracto. La "
+        "decisión depende de su función y alcance, no del número de páginas."
+    )
+
+    schema = {
+        "type": "object",
+        "properties": {
+            "scope": {
+                "type": "string",
+                "enum": [
+                    "completo",
+                    "parcial_extracto",
+                    "indeterminado",
+                ],
+            },
+            "confidence": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 100,
+            },
+            "evidence": {"type": "string"},
+        },
+        "required": ["scope", "confidence", "evidence"],
+        "additionalProperties": False,
+    }
+
+    encoded = base64.b64encode(pdf_bytes).decode("ascii")
+    payload = {
+        "model": modelo,
+        "reasoning": {"effort": "low"},
+        "input": [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "input_file",
+                        "filename": f"{documento_alias}.pdf",
+                        "file_data": (
+                            "data:application/pdf;base64," + encoded
+                        ),
+                        "detail": "high",
+                    },
+                    {
+                        "type": "input_text",
+                        "text": prompt,
+                    },
+                ],
+            }
+        ],
+        "text": {
+            "format": {
+                "type": "json_schema",
+                "name": "document_integrity_validation",
+                "strict": True,
+                "schema": schema,
+            }
+        },
+        "max_output_tokens": 400,
+    }
+
+    inicio = time.perf_counter()
+    respuesta = _request_json(
+        "POST",
+        "/responses",
+        payload,
+        timeout=240,
+    )
+    duracion = time.perf_counter() - inicio
+
+    try:
+        resultado = json.loads(_extraer_output_text(respuesta))
+    except json.JSONDecodeError as error:
+        raise OpenAIMultimodalError(
+            "OpenAI devolvió una respuesta inválida al validar integridad."
+        ) from error
+
+    usage = respuesta.get("usage") or {}
+    input_tokens = int(usage.get("input_tokens") or 0)
+    output_tokens = int(usage.get("output_tokens") or 0)
+    precios = MODELOS[modelo]
+    costo = (
+        input_tokens / 1_000_000 * precios["input_per_million"]
+        + output_tokens / 1_000_000 * precios["output_per_million"]
+    )
+
+    confianza = float(resultado["confidence"])
+    if 0 <= confianza <= 1:
+        confianza *= 100
+
+    return {
+        "Alcance documental": str(resultado["scope"]),
+        "Confianza alcance (%)": round(confianza, 2),
+        "Evidencia alcance": str(resultado["evidence"]).strip(),
+        "Costo alcance (USD)": costo,
+        "Tiempo alcance (s)": duracion,
+    }
