@@ -53,14 +53,16 @@ def diagnosticar_componente_pdf(
     texto = "\n\n".join(textos).strip()
     caracteres = len("".join(texto.split()))
 
+    ruta_sugerida = "Multimodal contextual"
     if caracteres >= MIN_CARACTERES_TEXTO:
-        ruta_sugerida = "Texto nativo + Jev"
-        motivo = "Texto nativo suficiente en las primeras páginas."
-    else:
-        ruta_sugerida = "Multimodal"
         motivo = (
-            "Texto nativo insuficiente. En el prototipo web se evita OCR "
-            "local y se usa análisis multimodal."
+            "Existe texto nativo, pero esta fase necesita evaluar también "
+            "alcance y función documental dentro de la unidad."
+        )
+    else:
+        motivo = (
+            "Texto nativo insuficiente. Esta fase usa análisis multimodal "
+            "contextual para evaluar identidad, alcance y función."
         )
 
     return {
