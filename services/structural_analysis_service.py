@@ -172,13 +172,15 @@ def construir_vista_unidad_estimacion(
     consecutivo: int,
 ) -> tuple[pd.DataFrame, dict]:
     """
-    Primera interpretación interna de una estimación.
+    Describe cómo está representada físicamente una estimación.
 
-    Regla deliberadamente limitada:
-    - CARATULA / CARÁTULA se marca como candidato a documento principal.
-    - El resto se conserva como componente de la unidad pendiente de análisis.
+    En esta etapa el nombre de los archivos solo genera señales estructurales.
+    Ningún archivo se declara todavía como representante definitivo de la
+    unidad ni se considera codificado.
 
-    Todavía no se decide qué otros componentes tienen código propio.
+    Ejemplo:
+    - Un archivo llamado CARATULA puede ser una señal útil.
+    - Esa señal no basta para concluir que ese archivo debe recibir el código.
     """
     archivos = obtener_archivos_unidad(inventario, ruta_carpeta)
 
@@ -192,16 +194,22 @@ def construir_vista_unidad_estimacion(
         normalizado = _normalizar(raiz)
 
         if normalizado == "CARATULA":
-            rol = "Candidato a documento principal"
+            senal = "Posible representación de la unidad"
+            fuente = "Nombre de archivo"
+            estado = "Requiere validación de contenido"
             motivo = (
-                "El nombre del archivo coincide con la carátula de la "
-                "estimación. Debe validarse su contenido en el siguiente paso."
+                "El nombre sugiere una carátula de estimación, pero el sistema "
+                "todavía no ha revisado su contenido y no asume que deba "
+                "recibir el código de la unidad."
             )
         else:
-            rol = "Componente de la unidad"
+            senal = "Sin señal estructural específica"
+            fuente = "—"
+            estado = "Pendiente de análisis"
             motivo = (
-                "Pertenece a la carpeta de la estimación, pero todavía no se "
-                "ha determinado si tiene código propio en el catálogo."
+                "El archivo pertenece físicamente a la unidad detectada. "
+                "Todavía no se ha determinado si representa la estimación, "
+                "si tiene un código propio o si es documentación de soporte."
             )
 
         filas.append(
@@ -209,7 +217,9 @@ def construir_vista_unidad_estimacion(
                 "Archivo": nombre,
                 "Tipo": fila["Tipo"],
                 "Tamaño (bytes)": fila["Tamaño (bytes)"],
-                "Rol preliminar": rol,
+                "Señal estructural": senal,
+                "Fuente de la señal": fuente,
+                "Estado": estado,
                 "Motivo": motivo,
             }
         )
@@ -222,6 +232,9 @@ def construir_vista_unidad_estimacion(
         "ruta_origen": str(ruta_carpeta),
         "codigo_unidad_candidato": codigo_unidad,
         "archivos": len(filas),
+        "representacion_fisica": f"Carpeta con {len(filas)} archivos directos",
+        "archivo_representativo": None,
+        "estado_representacion": "Pendiente de validación de contenido",
     }
 
     return pd.DataFrame(filas), resumen
