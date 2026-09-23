@@ -818,3 +818,257 @@ def validar_integridad_documental_multimodal(
         "Costo alcance (USD)": costo,
         "Tiempo alcance (s)": duracion,
     }
+
+
+
+def comparar_candidatos_unidad_multimodal(
+    candidatos: list[dict],
+    modelo: str,
+    tipo_unidad: str,
+    consecutivo: int,
+) -> dict:
+    """
+    Compara simultáneamente los archivos que la primera etapa relacionó con
+    el código de la propia unidad.
+
+    Esta etapa no clasifica contra el catálogo ni puede crear códigos. Solo
+    distribuye funciones dentro de la unidad: representante, componente,
+    soporte o indeterminado.
+    """
+    if modelo not in MODELOS:
+        raise OpenAIMultimodalError(f"Modelo no admitido: {modelo}")
+
+    if not candidatos:
+        raise OpenAIMultimodalError(
+            "No hay candidatos para comparar dentro de la unidad."
+        )
+
+    aliases = [str(item["alias"]) for item in candidatos]
+    if len(set(aliases)) != len(aliases):
+        raise OpenAIMultimodalError(
+            "Los alias de comparación deben ser únicos."
+        )
+
+    resumenes = []
+    contenido = []
+
+    for item in candidatos:
+        alias = str(item["alias"])
+        pdf_bytes = item["pdf_bytes"]
+
+        if len(pdf_bytes) >= 50 * 1024 * 1024:
+            raise OpenAIMultimodalError(
+                f"{alias} supera el límite de 50 MB por archivo."
+            )
+
+        resumenes.append(
+            (
+                f"{alias}: título detectado={item.get('titulo', '')}; "
+                f"clasificación inicial={item.get('clasificacion', '')}; "
+                f"evidencia inicial={item.get('evidencia', '')}"
+            )
+        )
+
+        encoded = base64.b64encode(pdf_bytes).decode("ascii")
+        contenido.append(
+            {
+                "type": "input_file",
+                "filename": f"{alias}.pdf",
+                "file_data": (
+                    "data:application/pdf;base64," + encoded
+                ),
+                "detail": "high",
+            }
+        )
+
+    prompt = (
+        "Compara CONJUNTAMENTE estos archivos, todos candidatos a estar "
+        f"relacionados con una unidad documental de tipo {tipo_unidad}, "
+        f"consecutivo {int(consecutivo)}. Los nombres candidate_XX son alias "
+        "neutros y no contienen información documental. No vuelvas a "
+        "clasificar contra ningún catálogo y no inventes códigos.\n\n"
+        "Tu tarea es distribuir funciones DOCUMENTALES relativas entre los "
+        "candidatos. Evalúalos entre sí, no de forma aislada.\n\n"
+        "Relaciones permitidas:\n"
+        "- representante_unidad: pieza que mejor identifica formalmente la "
+        "unidad completa cuando esta está fragmentada. Suele ser portada, "
+        "carátula o resumen formal que concentra número de estimación, periodo, "
+        "importes, avances, contrato y firmas. Debe haber COMO MÁXIMO uno.\n"
+        "- componente_unidad: contiene el cuerpo sustantivo propio de la "
+        "estimación, por ejemplo relación de conceptos, cantidades, precios, "
+        "importes o desglose de la estimación, pero no es la pieza que mejor "
+        "identifica formalmente la unidad.\n"
+        "- soporte: documento auxiliar relacionado con la estimación pero con "
+        "función distinta. Croquis, planos de apoyo, plantillas de importación, "
+        "listas de verificación, facturas, generadores, fotografías y "
+        "solicitudes de pago normalmente son soporte salvo evidencia clara de "
+        "que constituyen el cuerpo sustantivo de la estimación.\n"
+        "- indeterminado: evidencia insuficiente.\n\n"
+        "Reglas críticas:\n"
+        "1. No confundas 'habla de la estimación' con 'es la estimación'.\n"
+        "2. Si hay una carátula/resumen formal y también una hoja con el cuerpo "
+        "de conceptos/importes, normalmente la primera es representante y la "
+        "segunda componente.\n"
+        "3. Un croquis con cantidades o referencias a conceptos sigue siendo "
+        "croquis de soporte si su función principal es gráfica/ubicacional.\n"
+        "4. Si ningún archivo merece claramente ser representante, devuelve "
+        "representative_alias='ninguno'.\n"
+        "5. No modifiques la identidad inicial; solo asigna el papel relativo "
+        "dentro de esta unidad.\n\n"
+        "Información previa de cada candidato:\n"
+        + "\n".join(resumenes)
+    )
+    contenido.append({"type": "input_text", "text": prompt})
+
+    schema = {
+        "type": "object",
+        "properties": {
+            "representative_alias": {
+                "type": "string",
+                "enum": aliases + ["ninguno"],
+            },
+            "decisions": {
+                "type": "array",
+                "minItems": len(aliases),
+                "maxItems": len(aliases),
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "alias": {
+                            "type": "string",
+                            "enum": aliases,
+                        },
+                        "unit_relation": {
+                            "type": "string",
+                            "enum": [
+                                "representante_unidad",
+                                "componente_unidad",
+                                "soporte",
+                                "indeterminado",
+                            ],
+                        },
+                        "confidence": {
+                            "type": "number",
+                            "minimum": 0,
+                            "maximum": 100,
+                        },
+                        "evidence": {"type": "string"},
+                    },
+                    "required": [
+                        "alias",
+                        "unit_relation",
+                        "confidence",
+                        "evidence",
+                    ],
+                    "additionalProperties": False,
+                },
+            },
+            "unit_evidence": {"type": "string"},
+        },
+        "required": [
+            "representative_alias",
+            "decisions",
+            "unit_evidence",
+        ],
+        "additionalProperties": False,
+    }
+
+    payload = {
+        "model": modelo,
+        "reasoning": {"effort": "low"},
+        "input": [
+            {
+                "role": "user",
+                "content": contenido,
+            }
+        ],
+        "text": {
+            "format": {
+                "type": "json_schema",
+                "name": "comparative_unit_consolidation",
+                "strict": True,
+                "schema": schema,
+            }
+        },
+        "max_output_tokens": 900,
+    }
+
+    inicio = time.perf_counter()
+    respuesta = _request_json(
+        "POST",
+        "/responses",
+        payload,
+        timeout=300,
+    )
+    duracion = time.perf_counter() - inicio
+
+    try:
+        resultado = json.loads(_extraer_output_text(respuesta))
+    except json.JSONDecodeError as error:
+        raise OpenAIMultimodalError(
+            "OpenAI devolvió una comparación de unidad inválida."
+        ) from error
+
+    decisiones = resultado.get("decisions") or []
+    aliases_devuelto = [str(item.get("alias", "")) for item in decisiones]
+
+    if (
+        len(decisiones) != len(aliases)
+        or set(aliases_devuelto) != set(aliases)
+        or len(set(aliases_devuelto)) != len(aliases_devuelto)
+    ):
+        raise OpenAIMultimodalError(
+            "La comparación no devolvió exactamente una decisión por candidato."
+        )
+
+    representante = str(resultado["representative_alias"])
+    representantes_decision = [
+        str(item["alias"])
+        for item in decisiones
+        if str(item["unit_relation"]) == "representante_unidad"
+    ]
+
+    if representante == "ninguno":
+        if representantes_decision:
+            raise OpenAIMultimodalError(
+                "La comparación marcó representante aunque indicó 'ninguno'."
+            )
+    else:
+        if representantes_decision != [representante]:
+            raise OpenAIMultimodalError(
+                "La comparación no produjo un único representante coherente."
+            )
+
+    usage = respuesta.get("usage") or {}
+    input_tokens = int(usage.get("input_tokens") or 0)
+    output_tokens = int(usage.get("output_tokens") or 0)
+
+    precios = MODELOS[modelo]
+    costo = (
+        input_tokens / 1_000_000 * precios["input_per_million"]
+        + output_tokens / 1_000_000 * precios["output_per_million"]
+    )
+
+    decisiones_normalizadas = []
+    for item in decisiones:
+        confianza = float(item["confidence"])
+        if 0 <= confianza <= 1:
+            confianza *= 100
+
+        decisiones_normalizadas.append(
+            {
+                "Alias": str(item["alias"]),
+                "Relación comparativa": str(item["unit_relation"]),
+                "Confianza comparativa (%)": round(confianza, 2),
+                "Evidencia comparativa": str(item["evidence"]).strip(),
+            }
+        )
+
+    return {
+        "Representante": representante,
+        "Decisiones": decisiones_normalizadas,
+        "Evidencia unidad": str(resultado["unit_evidence"]).strip(),
+        "Costo comparación (USD)": costo,
+        "Tiempo comparación (s)": duracion,
+        "Modelo comparación": str(respuesta.get("model") or modelo),
+    }
