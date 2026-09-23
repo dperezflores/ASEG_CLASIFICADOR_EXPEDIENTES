@@ -7,7 +7,7 @@ from zipfile import BadZipFile, ZipFile
 
 import pandas as pd
 
-from config.constants import CARPETAS_IGNORADAS
+from config.constants import ARCHIVOS_IGNORADOS, CARPETAS_IGNORADAS
 
 
 TIPOS_ARCHIVO = {
@@ -33,6 +33,20 @@ def _ruta_ignorada(ruta: PurePosixPath) -> bool:
     La comparación se hace contra cada parte de la ruta.
     """
     return any(parte in CARPETAS_IGNORADAS for parte in ruta.parts)
+
+
+def es_archivo_ignorado(nombre_archivo: str) -> bool:
+    """
+    Indica si un archivo es ruido técnico del sistema operativo.
+
+    Los archivos temporales de Office que comienzan con "~$" también se
+    excluyen del análisis, sin eliminarlos del expediente original.
+    """
+    nombre = str(nombre_archivo).strip().lower()
+    return (
+        nombre in ARCHIVOS_IGNORADOS
+        or nombre.startswith("~$")
+    )
 
 
 def _clasificar_extension(extension: str) -> str:
@@ -70,6 +84,9 @@ def inventariar_expediente_zip(contenido_zip: bytes) -> tuple[pd.DataFrame, dict
 
                 if info.is_dir():
                     carpetas.add(str(ruta).rstrip("/"))
+                    continue
+
+                if es_archivo_ignorado(ruta.name):
                     continue
 
                 # Guardamos también las carpetas implícitas de cada archivo.
