@@ -6,7 +6,7 @@ from services.openai_multimodal_service import (
     OpenAIMultimodalError,
     openai_configurado,
 )
-from services.jev_classifier_service import JevError, jev_configurado
+from services.jev_classifier_service import JevError
 from services.structural_analysis_service import (
     construir_mapa_estructural,
     obtener_archivos_unidad,
@@ -31,12 +31,6 @@ if not openai_configurado():
     )
     st.stop()
 
-if not jev_configurado():
-    st.error(
-        "La API key de TypeSafe/Jev no está configurada en Streamlit Secrets."
-    )
-    st.stop()
-
 inventario = st.session_state["inventario"]
 contenido_zip = st.session_state["contenido_zip"]
 procedimiento = st.session_state["procedimiento"]
@@ -46,9 +40,10 @@ mapa = construir_mapa_estructural(inventario)
 estimaciones = obtener_estimaciones_detectadas(mapa)
 
 st.info(
-    "En esta prueba se analiza un solo archivo a la vez. "
-    "El nombre real y la ruta se muestran únicamente en la interfaz; "
-    "la IA recibe un alias neutro y el contenido del documento."
+    "En esta prueba se analiza un solo archivo a la vez. El nombre real y "
+    "la ruta se muestran únicamente en la interfaz. El análisis separa "
+    "identidad, alcance documental, relación con la unidad y equivalencia "
+    "real con el catálogo."
 )
 
 if estimaciones.empty:
@@ -116,7 +111,7 @@ st.caption(
 st.subheader("2. Ejecutar análisis de contenido")
 
 modelo = st.selectbox(
-    "Modelo multimodal de respaldo",
+    "Modelo multimodal",
     options=list(MODELOS.keys()),
     index=0,
     format_func=lambda m: MODELOS[m]["label"],
@@ -136,6 +131,8 @@ if st.button(
                 catalogo=catalogo,
                 procedimiento=procedimiento,
                 modelo_multimodal=modelo,
+                tipo_unidad="Estimación",
+                consecutivo=int(unidad["Consecutivo"]),
             )
             st.session_state["resultado_componente_unidad"] = {
                 "archivo": archivo,
@@ -167,7 +164,16 @@ if (
     st.write(f"**Ruta utilizada:** {resultado['Ruta utilizada']}")
     st.write(f"**Título detectado:** {resultado['Título detectado']}")
     st.write(
-        f"**Coincide con catálogo:** "
+        f"**Alcance documental:** {resultado['Alcance documental']}"
+    )
+    st.write(
+        f"**Relación con la unidad:** {resultado['Relación con la unidad']}"
+    )
+    st.write(
+        f"**Concepto relacionado:** {resultado['Concepto relacionado']}"
+    )
+    st.write(
+        f"**Coincide con catálogo como documento independiente:** "
         f"{'Sí' if resultado['Coincide catálogo'] else 'No'}"
     )
 
