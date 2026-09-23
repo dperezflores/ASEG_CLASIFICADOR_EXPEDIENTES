@@ -22,9 +22,10 @@ mapa = construir_mapa_estructural(inventario)
 estimaciones = obtener_estimaciones_detectadas(mapa)
 
 st.info(
-    "Este paso todavía no usa IA. Su objetivo es comprobar que el sistema "
-    "entiende una estimación como una unidad documental formada por varios "
-    "archivos, no como un único PDF."
+    "Este paso todavía no usa IA. El sistema identifica una unidad documental "
+    "y describe cómo está representada físicamente en este expediente. "
+    "Los nombres de archivos solo generan señales; no determinan por sí solos "
+    "qué archivo debe recibir un código."
 )
 
 if estimaciones.empty:
@@ -62,6 +63,11 @@ c1.metric("Tipo", resumen["tipo_unidad"])
 c2.metric("Consecutivo", resumen["consecutivo"])
 c3.metric("Archivos directos", resumen["archivos"])
 
+st.write(f"**Representación física:** {resumen['representacion_fisica']}")
+st.write(
+    "**Archivo representativo:** pendiente de validar por contenido"
+)
+
 st.write("**Ruta original:**")
 st.code(resumen["ruta_origen"], language=None)
 
@@ -69,9 +75,9 @@ st.write("**Código de unidad candidato:**")
 st.code(resumen["codigo_unidad_candidato"], language=None)
 
 st.caption(
-    "El código anterior se deriva de la estructura detectada y del tipo de "
-    "procedimiento. Todavía no implica que un archivo haya sido validado o "
-    "renombrado."
+    "El código anterior corresponde a la unidad documental candidata, no a "
+    "un archivo específico. Ningún archivo ha sido validado, codificado o "
+    "renombrado todavía."
 )
 
 st.subheader("2. Archivos que forman la unidad")
@@ -85,7 +91,9 @@ st.dataframe(
             "Archivo",
             "Tipo",
             "Tamaño",
-            "Rol preliminar",
+            "Señal estructural",
+            "Fuente de la señal",
+            "Estado",
             "Motivo",
         ]
     ],
@@ -93,37 +101,39 @@ st.dataframe(
     hide_index=True,
 )
 
-principales = detalle[
-    detalle["Rol preliminar"] == "Candidato a documento principal"
+senales = detalle[
+    detalle["Señal estructural"] != "Sin señal estructural específica"
 ]
 
 st.subheader("3. Resultado preliminar")
 
-if len(principales) == 1:
-    principal = principales.iloc[0]["Archivo"]
-    st.success(
-        f"Se encontró un candidato a documento principal: {principal}."
-    )
-elif len(principales) > 1:
-    st.warning(
-        "Se encontró más de un candidato a documento principal. "
-        "Será necesaria validación adicional."
+if senales.empty:
+    st.info(
+        "La estructura no aporta una señal clara sobre qué archivo representa "
+        "la unidad. Será necesario revisar contenido."
     )
 else:
     st.warning(
-        "No se encontró un archivo con nombre de carátula. "
-        "En una etapa posterior deberá identificarse por contenido."
+        "Se encontraron señales estructurales útiles, pero ninguna se toma "
+        "como conclusión. Deben validarse mediante contenido."
     )
 
+    for _, fila in senales.iterrows():
+        st.write(
+            f"- **{fila['Archivo']}** → {fila['Señal estructural']} "
+            f"({fila['Fuente de la señal']})"
+        )
+
 st.write(
-    "Los demás archivos se conservan como componentes de la unidad. "
-    "Todavía no se intenta decidir cuáles tienen código propio."
+    "Todos los archivos siguen siendo componentes de la unidad. En el "
+    "siguiente paso se determinará, mediante contenido, cuál representa la "
+    "estimación, cuáles tienen código propio y cuáles son soporte."
 )
 
 st.divider()
 
 st.caption(
-    "Siguiente paso, después de validar esta vista: revisar el contenido de "
-    "los componentes para separar tres grupos: documento principal, "
-    "documentos con código propio y documentos de soporte sin código."
+    "Siguiente paso: validar la unidad por contenido y determinar cómo está "
+    "representada realmente en este expediente: un archivo representativo, "
+    "documentos con código propio y documentación de soporte."
 )
