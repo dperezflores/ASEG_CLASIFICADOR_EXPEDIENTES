@@ -158,8 +158,11 @@ def clasificar_pdf_multimodal(
         "información de nombres de archivo o rutas. Primero identifica qué "
         "tipo de documento es y proporciona un título documental breve. "
         "Después determina si corresponde realmente a una de las opciones "
-        "del catálogo. No fuerces una coincidencia: usa fuera_catalogo si "
-        "ninguna opción corresponde de manera razonable.\n\n"
+        "del catálogo. Una coincidencia exige equivalencia documental y "
+        "funcional; compartir palabras, tema, etapa de obra o contexto "
+        "administrativo no es suficiente. No elijas la opción más cercana "
+        "solo por similitud. Si el documento cumple otra función o solamente "
+        "sirve como soporte de un documento listado, usa fuera_catalogo.\n\n"
         "Opciones permitidas:\n"
         + "\n".join(opciones)
     )
