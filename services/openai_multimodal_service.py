@@ -286,6 +286,257 @@ def identificar_documento_multimodal(
     }
 
 
+def generar_ficha_documental_multimodal(
+    documento_alias: str,
+    pdf_bytes: bytes,
+    modelo: str,
+) -> dict:
+    """
+    Primera lectura documental rica y reutilizable.
+
+    Esta función NO recibe catálogo, código, nombre real ni ruta. Su tarea es
+    observar el PDF una sola vez y producir una ficha canónica con:
+    - identidad física general;
+    - uno o varios documentos lógicos internos;
+    - rangos de páginas;
+    - función y acto documentado;
+    - texto representativo útil para comparaciones posteriores;
+    - datos clave y marcadores de página;
+    - señales de integridad y calidad de lectura.
+
+    No decide códigos institucionales ni relaciones con otros archivos.
+    """
+    if modelo not in MODELOS:
+        raise OpenAIMultimodalError(f"Modelo no admitido: {modelo}")
+
+    if len(pdf_bytes) >= 50 * 1024 * 1024:
+        raise OpenAIMultimodalError(
+            f"{documento_alias} supera el límite de 50 MB por archivo."
+        )
+
+    prompt = (
+        "Analiza este PDF de un expediente de obra pública como un lector "
+        "documental experto. NO tienes acceso al catálogo institucional, NO "
+        "conoces códigos y NO debes asignar ninguno. No uses ni infieras el "
+        "nombre real del archivo ni su ruta.\n\n"
+        "OBJETIVO: producir una FICHA DOCUMENTAL CANÓNICA reutilizable para "
+        "etapas posteriores. Debes describir qué contiene físicamente el PDF "
+        "y separar los documentos lógicos autónomos que existan dentro de él.\n\n"
+        "INSTRUCCIONES:\n"
+        "1. Determina si el PDF contiene un solo documento lógico o varios. "
+        "Un documento lógico es una pieza documental autónoma con identidad y "
+        "función propias, aunque varias piezas estén unidas en un mismo PDF.\n"
+        "2. Para cada documento lógico, indica páginas inicial y final usando "
+        "numeración 1..N del PDF. No inventes cortes si la frontera no es "
+        "suficientemente visible; en caso de duda conserva un solo segmento y "
+        "explica la incertidumbre.\n"
+        "3. Identifica cada documento por lo que ES, no por la etapa general "
+        "del expediente ni por documentos que mencione.\n"
+        "4. Describe su función formal y el acto, hecho u operación que "
+        "documenta.\n"
+        "5. Genera representative_text como una transcripción documental "
+        "selectiva, fiel al contenido visible y útil para comparación. Conserva "
+        "nombres, números, fechas, importes, folios, contratos, números de "
+        "estimación, pólizas y frases distintivas. No inventes texto ilegible. "
+        "No es necesario transcribir todo el documento.\n"
+        "6. Extrae key_facts como datos breves y verificables visibles en el "
+        "documento. No completes datos ausentes.\n"
+        "7. Genera page_markers solamente para páginas que ayuden a distinguir "
+        "el contenido o a justificar límites de segmentos. Cada marcador debe "
+        "contener texto visible breve y distintivo. Prioriza inicio, cierre y "
+        "cambios de documento lógico.\n"
+        "8. Evalúa document_scope de cada documento lógico: completo, "
+        "parcial_extracto o indeterminado. 'Completo' significa que ESA pieza "
+        "documental parece una instancia completa de su propio tipo, no que "
+        "todo el expediente o toda la etapa estén completos.\n"
+        "9. reading_quality describe qué tan legible fue el PDF para esta "
+        "lectura. needs_additional_ocr solo debe ser true cuando la lectura "
+        "visual no permita recuperar suficiente contenido textual fiable.\n"
+        "10. NO compares este archivo con otros, NO decidas duplicados y NO "
+        "selecciones conceptos de catálogo.\n"
+        "11. Si el PDF contiene anexos que son parte inseparable del mismo "
+        "documento, no los separes solo porque cambie el formato. Separa solo "
+        "cuando exista identidad documental autónoma.\n\n"
+        "La salida debe ser suficientemente rica para que otro motor pueda "
+        "comparar documentos y consultar catálogo sin volver a mirar el PDF."
+    )
+
+    schema = {
+        "type": "object",
+        "properties": {
+            "physical_document": {
+                "type": "object",
+                "properties": {
+                    "page_count_observed": {
+                        "type": "integer",
+                        "minimum": 1,
+                    },
+                    "is_compound": {"type": "boolean"},
+                    "reading_quality": {
+                        "type": "string",
+                        "enum": ["alta", "media", "baja"],
+                    },
+                    "needs_additional_ocr": {"type": "boolean"},
+                    "general_summary": {"type": "string"},
+                    "segmentation_uncertainty": {"type": "string"},
+                },
+                "required": [
+                    "page_count_observed",
+                    "is_compound",
+                    "reading_quality",
+                    "needs_additional_ocr",
+                    "general_summary",
+                    "segmentation_uncertainty",
+                ],
+                "additionalProperties": False,
+            },
+            "logical_documents": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "logical_id": {"type": "string"},
+                        "page_start": {
+                            "type": "integer",
+                            "minimum": 1,
+                        },
+                        "page_end": {
+                            "type": "integer",
+                            "minimum": 1,
+                        },
+                        "detected_title": {"type": "string"},
+                        "formal_function": {"type": "string"},
+                        "documented_act": {"type": "string"},
+                        "document_scope": {
+                            "type": "string",
+                            "enum": [
+                                "completo",
+                                "parcial_extracto",
+                                "indeterminado",
+                            ],
+                        },
+                        "representative_text": {"type": "string"},
+                        "key_facts": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                        },
+                        "page_markers": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "page": {
+                                        "type": "integer",
+                                        "minimum": 1,
+                                    },
+                                    "text": {"type": "string"},
+                                },
+                                "required": ["page", "text"],
+                                "additionalProperties": False,
+                            },
+                        },
+                        "confidence": {
+                            "type": "number",
+                            "minimum": 0,
+                            "maximum": 100,
+                        },
+                        "evidence": {"type": "string"},
+                    },
+                    "required": [
+                        "logical_id",
+                        "page_start",
+                        "page_end",
+                        "detected_title",
+                        "formal_function",
+                        "documented_act",
+                        "document_scope",
+                        "representative_text",
+                        "key_facts",
+                        "page_markers",
+                        "confidence",
+                        "evidence",
+                    ],
+                    "additionalProperties": False,
+                },
+            },
+        },
+        "required": [
+            "physical_document",
+            "logical_documents",
+        ],
+        "additionalProperties": False,
+    }
+
+    encoded = base64.b64encode(pdf_bytes).decode("ascii")
+    payload = {
+        "model": modelo,
+        "reasoning": {"effort": "low"},
+        "input": [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "input_file",
+                        "filename": f"{documento_alias}.pdf",
+                        "file_data": (
+                            "data:application/pdf;base64," + encoded
+                        ),
+                        "detail": "high",
+                    },
+                    {
+                        "type": "input_text",
+                        "text": prompt,
+                    },
+                ],
+            }
+        ],
+        "text": {
+            "format": {
+                "type": "json_schema",
+                "name": "canonical_document_profile",
+                "strict": True,
+                "schema": schema,
+            }
+        },
+        "max_output_tokens": 5000,
+    }
+
+    inicio = time.perf_counter()
+    respuesta = _request_json(
+        "POST",
+        "/responses",
+        payload,
+        timeout=300,
+    )
+    duracion = time.perf_counter() - inicio
+
+    try:
+        resultado = json.loads(_extraer_output_text(respuesta))
+    except json.JSONDecodeError as error:
+        raise OpenAIMultimodalError(
+            "OpenAI devolvió una ficha documental inválida."
+        ) from error
+
+    usage = respuesta.get("usage") or {}
+    input_tokens = int(usage.get("input_tokens") or 0)
+    output_tokens = int(usage.get("output_tokens") or 0)
+    precios = MODELOS[modelo]
+    costo = (
+        input_tokens / 1_000_000 * precios["input_per_million"]
+        + output_tokens / 1_000_000 * precios["output_per_million"]
+    )
+
+    return {
+        "physical_document": resultado["physical_document"],
+        "logical_documents": resultado["logical_documents"],
+        "model": str(respuesta.get("model") or modelo),
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+        "cost_usd": costo,
+        "duration_s": duracion,
+    }
+
+
 def clasificar_pdf_multimodal(
     documento_alias: str,
     pdf_bytes: bytes,
