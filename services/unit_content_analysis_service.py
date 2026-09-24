@@ -10,6 +10,10 @@ from services.catalog_family_service import (
     construir_catalogo_operativo_estimacion,
 )
 from services.evaluation_service import extraer_paginas_pdf_del_zip
+from services.jev_classifier_service import (
+    jev_configurado,
+    validar_equivalencia_identidad_con_jev,
+)
 from services.openai_multimodal_service import (
     clasificar_pdf_multimodal,
     comparar_candidatos_unidad_multimodal,
@@ -221,6 +225,17 @@ def analizar_componente_unidad(
     acto_identidad_pura = ""
     confianza_identidad_pura = 0.0
     evidencia_identidad_pura = ""
+    equivalencia_resuelta_por = "No requerida"
+    fallback_multimodal_jev = "No"
+    equivalencia_jev = "no_evaluada"
+    decision_original_jev = ""
+    confianza_jev = 0.0
+    probabilidad_jev = 0.0
+    margen_jev = None
+    control_jev = ""
+    error_jev = ""
+    llamadas_multimodales = 1
+    llamadas_jev = 0
     relacion = "soporte"
     validacion_secundaria = "No requerida"
     evidencia_secundaria = ""
@@ -306,6 +321,7 @@ def analizar_componente_unidad(
                     "Tiempo identidad pura (s)"
                 ]
             )
+            llamadas_multimodales += 1
             confianza_final = min(
                 confianza_final,
                 confianza_identidad_pura,
@@ -317,33 +333,125 @@ def analizar_componente_unidad(
                 f"Acto documentado: {acto_identidad_pura}."
             )
 
-        etapa_equivalencia = validar_equivalencia_documental_multimodal(
-            documento_alias="componente_unidad",
-            pdf_bytes=pdf_contexto,
-            modelo=modelo_multimodal,
-            concepto_objetivo=concepto_inicial,
-            identidad_detectada=identidad_para_equivalencia,
+        usar_jev = (
+            verificacion_identidad_pura == "Aplicada"
+            and codigo_normalizado
+            in CODIGOS_IDENTIDAD_PURA_SELECTIVA
         )
 
-        equivalencia = str(
-            etapa_equivalencia["Equivalencia funcional"]
-        )
-        confianza_equivalencia = float(
-            etapa_equivalencia["Confianza equivalencia (%)"]
-        )
-        evidencia_equivalencia = str(
-            etapa_equivalencia["Evidencia equivalencia"]
-        )
-        confianza_final = min(
-            confianza_final,
-            confianza_equivalencia,
-        )
-        costo += float(
-            etapa_equivalencia["Costo equivalencia (USD)"]
-        )
-        tiempo += float(
-            etapa_equivalencia["Tiempo equivalencia (s)"]
-        )
+        resolver_con_multimodal = not usar_jev
+
+        if usar_jev:
+            if jev_configurado():
+                try:
+                    llamadas_jev += 1
+                    etapa_jev = validar_equivalencia_identidad_con_jev(
+                        documento_alias="equivalencia_selectiva",
+                        identidad_documental=titulo_identidad_pura,
+                        funcion_formal=funcion_identidad_pura,
+                        acto_documentado=acto_identidad_pura,
+                        concepto_objetivo=concepto_inicial,
+                    )
+
+                    equivalencia_jev = str(
+                        etapa_jev["Equivalencia JEV"]
+                    )
+                    decision_original_jev = str(
+                        etapa_jev["Decisión original JEV"]
+                    )
+                    confianza_jev = float(
+                        etapa_jev["Confianza JEV (%)"]
+                    )
+                    probabilidad_jev = float(
+                        etapa_jev[
+                            "Probabilidad elegida JEV (%)"
+                        ]
+                    )
+                    margen_jev = etapa_jev["Margen JEV (%)"]
+                    control_jev = str(
+                        etapa_jev["Control JEV"]
+                    )
+
+                    costo += float(
+                        etapa_jev["Costo JEV (USD)"]
+                    )
+                    tiempo += float(
+                        etapa_jev["Tiempo JEV (s)"]
+                    )
+
+                    if equivalencia_jev in (
+                        "equivalente",
+                        "no_equivalente",
+                    ):
+                        equivalencia = equivalencia_jev
+                        confianza_equivalencia = max(
+                            confianza_jev,
+                            probabilidad_jev,
+                        )
+                        evidencia_equivalencia = (
+                            "JEV comparó exclusivamente la identidad "
+                            "documental pura contra el concepto candidato. "
+                            f"Decisión: {equivalencia_jev}."
+                        )
+                        if control_jev:
+                            evidencia_equivalencia += (
+                                " Control: " + control_jev
+                            )
+                        equivalencia_resuelta_por = "JEV"
+                        resolver_con_multimodal = False
+                    else:
+                        fallback_multimodal_jev = (
+                            "Sí - JEV indeterminado"
+                        )
+                        resolver_con_multimodal = True
+
+                except Exception as error:
+                    error_jev = str(error)
+                    fallback_multimodal_jev = (
+                        "Sí - error JEV"
+                    )
+                    resolver_con_multimodal = True
+            else:
+                fallback_multimodal_jev = (
+                    "Sí - JEV no configurado"
+                )
+                resolver_con_multimodal = True
+
+        if resolver_con_multimodal:
+            etapa_equivalencia = validar_equivalencia_documental_multimodal(
+                documento_alias="componente_unidad",
+                pdf_bytes=pdf_contexto,
+                modelo=modelo_multimodal,
+                concepto_objetivo=concepto_inicial,
+                identidad_detectada=identidad_para_equivalencia,
+            )
+            llamadas_multimodales += 1
+
+            equivalencia = str(
+                etapa_equivalencia["Equivalencia funcional"]
+            )
+            confianza_equivalencia = float(
+                etapa_equivalencia["Confianza equivalencia (%)"]
+            )
+            evidencia_equivalencia = str(
+                etapa_equivalencia["Evidencia equivalencia"]
+            )
+            confianza_final = min(
+                confianza_final,
+                confianza_equivalencia,
+            )
+            costo += float(
+                etapa_equivalencia["Costo equivalencia (USD)"]
+            )
+            tiempo += float(
+                etapa_equivalencia["Tiempo equivalencia (s)"]
+            )
+            equivalencia_resuelta_por = "Multimodal"
+        else:
+            confianza_final = min(
+                confianza_final,
+                confianza_equivalencia,
+            )
 
         if equivalencia == "equivalente":
             etapa_integridad = validar_integridad_documental_multimodal(
@@ -377,6 +485,7 @@ def analizar_componente_unidad(
             tiempo += float(
                 etapa_integridad["Tiempo alcance (s)"]
             )
+            llamadas_multimodales += 1
             validacion_secundaria = (
                 "Equivalencia documental-funcional + integridad"
             )
@@ -413,6 +522,20 @@ def analizar_componente_unidad(
             "Identidad pura selectiva: "
             + evidencia_identidad_pura
         )
+    if equivalencia_jev != "no_evaluada":
+        evidencias.append(
+            "JEV equivalencia: "
+            + equivalencia_jev
+            + (
+                f" (decisión original: {decision_original_jev})."
+                if decision_original_jev
+                else "."
+            )
+        )
+    if error_jev:
+        evidencias.append(
+            "JEV error/fallback: " + error_jev
+        )
     if evidencia_equivalencia:
         evidencias.append(
             "Equivalencia: " + evidencia_equivalencia
@@ -438,13 +561,13 @@ def analizar_componente_unidad(
 
     return {
         "Ruta utilizada": (
-            "Multimodal: clasificación + verificación selectiva + "
-            "equivalencia + integridad"
+            "Multimodal + JEV selectivo con fallback controlado"
         ),
         "Motivo de ruta": (
-            "El flujo validado se conserva. La identidad pura solo se añade "
-            "como segunda opinión para códigos propios de riesgo y nunca "
-            "participa en los candidatos al código de la estimación."
+            "El flujo validado se conserva. Para códigos sensibles, la "
+            "identidad pura se compara por texto con JEV; solo si JEV queda "
+            "indeterminado, no está configurado o falla, se usa equivalencia "
+            "multimodal como respaldo."
         ),
         "Título detectado": titulo,
         "Clasificación inicial": concepto_inicial,
@@ -455,6 +578,17 @@ def analizar_componente_unidad(
         "Acto identidad pura": acto_identidad_pura,
         "Confianza identidad pura (%)": confianza_identidad_pura,
         "Evidencia identidad pura": evidencia_identidad_pura,
+        "Equivalencia resuelta por": equivalencia_resuelta_por,
+        "Equivalencia JEV": equivalencia_jev,
+        "Decisión original JEV": decision_original_jev,
+        "Confianza JEV (%)": confianza_jev,
+        "Probabilidad elegida JEV (%)": probabilidad_jev,
+        "Margen JEV (%)": margen_jev,
+        "Control JEV": control_jev,
+        "Fallback multimodal JEV": fallback_multimodal_jev,
+        "Error JEV": error_jev,
+        "Llamadas multimodales documento": llamadas_multimodales,
+        "Llamadas JEV documento": llamadas_jev,
         "Equivalencia funcional": equivalencia,
         "Confianza equivalencia (%)": confianza_equivalencia,
         "Evidencia equivalencia": evidencia_equivalencia,
@@ -547,6 +681,17 @@ def analizar_unidad_completa(
                 "Acto identidad pura": "",
                 "Confianza identidad pura (%)": 0.0,
                 "Evidencia identidad pura": "",
+                "Equivalencia resuelta por": "No requerida",
+                "Equivalencia JEV": "no_evaluada",
+                "Decisión original JEV": "",
+                "Confianza JEV (%)": 0.0,
+                "Probabilidad elegida JEV (%)": 0.0,
+                "Margen JEV (%)": None,
+                "Control JEV": "",
+                "Fallback multimodal JEV": "No",
+                "Error JEV": "",
+                "Llamadas multimodales documento": 0,
+                "Llamadas JEV documento": 0,
                 "Equivalencia funcional": "indeterminado",
                 "Confianza equivalencia (%)": 0.0,
                 "Evidencia equivalencia": "",
