@@ -18,6 +18,8 @@ from services.openai_multimodal_service import (
 
 
 PAGINAS_INICIALES = 2
+MAX_INTENTOS_ANALISIS = 2
+MAX_PAGINAS_INTEGRIDAD_COMPLETA = 10
 
 
 def diagnosticar_componente_pdf(
@@ -90,6 +92,23 @@ def _paginas_contexto(total_paginas: int) -> list[int]:
         return list(range(1, total + 1))
 
     return [1, 2, total - 1, total]
+
+
+def _paginas_integridad(total_paginas: int) -> list[int]:
+    """
+    Para decidir completitud conviene observar el documento completo cuando
+    es corto. En documentos largos se conserva una muestra de inicio y cierre.
+    """
+    total = int(total_paginas)
+
+    if total <= 0:
+        return []
+    if total <= MAX_PAGINAS_INTEGRIDAD_COMPLETA:
+        return list(range(1, total + 1))
+
+    centro = max(3, (total + 1) // 2)
+    paginas = [1, 2, centro, total - 1, total]
+    return sorted(set(p for p in paginas if 1 <= p <= total))
 
 
 def _extraer_pdf_paginas(
@@ -213,7 +232,7 @@ def analizar_componente_unidad(
         rol = "Candidato a comparación de unidad"
 
     else:
-        paginas_contexto = _paginas_contexto(
+        paginas_contexto = _paginas_integridad(
             diagnostico["Páginas totales"]
         )
         pdf_contexto = _extraer_pdf_paginas(
@@ -265,12 +284,16 @@ def analizar_componente_unidad(
     else:
         evidencia = evidencia_inicial
 
-    paginas_usadas = ", ".join(
-        str(p)
-        for p in _paginas_contexto(
+    if validacion_secundaria == "Integridad documental":
+        paginas_reporte = _paginas_integridad(
             diagnostico["Páginas totales"]
         )
-    )
+    else:
+        paginas_reporte = _paginas_contexto(
+            diagnostico["Páginas totales"]
+        )
+
+    paginas_usadas = ", ".join(str(p) for p in paginas_reporte)
 
     return {
         "Ruta utilizada": (
@@ -313,6 +336,9 @@ def analizar_unidad_completa(
 ) -> pd.DataFrame:
     """
     Analiza todos los PDF directos de una sola unidad documental.
+
+    Si un archivo falla por una incidencia transitoria, se reintenta una vez
+    antes de marcarlo como error definitivo.
     """
     resultados = []
     total = len(archivos_pdf)
@@ -323,26 +349,38 @@ def analizar_unidad_completa(
     ):
         archivo = str(fila["Archivo"])
         ruta_pdf = str(fila["Ruta original"])
+        resultado = None
+        errores_intentos = []
 
-        try:
-            resultado = analizar_componente_unidad(
-                contenido_zip=contenido_zip,
-                ruta_pdf=ruta_pdf,
-                catalogo=catalogo,
-                procedimiento=procedimiento,
-                modelo_multimodal=modelo_multimodal,
-                tipo_unidad=tipo_unidad,
-                consecutivo=consecutivo,
-            )
+        for intento in range(1, MAX_INTENTOS_ANALISIS + 1):
+            try:
+                resultado = analizar_componente_unidad(
+                    contenido_zip=contenido_zip,
+                    ruta_pdf=ruta_pdf,
+                    catalogo=catalogo,
+                    procedimiento=procedimiento,
+                    modelo_multimodal=modelo_multimodal,
+                    tipo_unidad=tipo_unidad,
+                    consecutivo=consecutivo,
+                )
+                break
+            except Exception as error:
+                errores_intentos.append(str(error))
 
+        if resultado is not None:
             registro = {
                 "Archivo": archivo,
                 "Ruta original": ruta_pdf,
                 **resultado,
+                "Intentos de análisis": len(errores_intentos) + 1,
+                "Reintento aplicado": bool(errores_intentos),
                 "Error": "",
             }
-
-        except Exception as error:
+        else:
+            detalle_error = " | ".join(
+                f"Intento {i + 1}: {mensaje}"
+                for i, mensaje in enumerate(errores_intentos)
+            )
             registro = {
                 "Archivo": archivo,
                 "Ruta original": ruta_pdf,
@@ -366,7 +404,9 @@ def analizar_unidad_completa(
                 "Costo (USD)": 0.0,
                 "Tiempo (s)": 0.0,
                 "Páginas usadas": "",
-                "Error": str(error),
+                "Intentos de análisis": MAX_INTENTOS_ANALISIS,
+                "Reintento aplicado": MAX_INTENTOS_ANALISIS > 1,
+                "Error": detalle_error,
             }
 
         resultados.append(registro)
