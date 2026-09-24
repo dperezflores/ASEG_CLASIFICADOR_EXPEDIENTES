@@ -2,6 +2,9 @@ import pandas as pd
 import streamlit as st
 
 from services.catalog_service import cargar_catalogo
+from services.catalog_family_service import (
+    construir_catalogo_operativo_estimacion,
+)
 from services.openai_multimodal_service import (
     MODELOS,
     openai_configurado,
@@ -61,8 +64,8 @@ seleccion = st.selectbox(
     options=list(mapa_unidades.keys()),
     index=0,
     help=(
-        "Para esta primera validación se recomienda trabajar únicamente "
-        "con EST 1."
+        "El sistema parametriza automáticamente las familias consecutivas "
+        "con el número de la estimación seleccionada."
     ),
 )
 
@@ -77,6 +80,14 @@ archivos_pdf = archivos[
     archivos["Extensión"].astype(str).str.lower() == ".pdf"
 ].copy()
 
+catalogo_operativo, cambios_familias = (
+    construir_catalogo_operativo_estimacion(
+        catalogo=catalogo,
+        procedimiento=procedimiento,
+        consecutivo=int(unidad["Consecutivo"]),
+    )
+)
+
 st.subheader("1. Alcance de la prueba")
 
 c1, c2, c3 = st.columns(3)
@@ -89,6 +100,27 @@ st.caption(
     "se conserva. Los códigos propios se protegen y los candidatos al código "
     "de la estimación se resuelven mediante una comparación conjunta."
 )
+
+if not cambios_familias.empty:
+    with st.expander("Ver familias consecutivas aplicadas"):
+        st.dataframe(
+            cambios_familias[
+                [
+                    "Familia",
+                    "Código base",
+                    "Código operativo",
+                    "Concepto base",
+                    "Concepto operativo",
+                ]
+            ],
+            use_container_width=True,
+            hide_index=True,
+        )
+        st.caption(
+            "El catálogo institucional no se modifica. Esta es una vista "
+            "operativa generada determinísticamente para la estimación "
+            "seleccionada."
+        )
 
 with st.expander("Ver componentes que se analizarán"):
     st.dataframe(
