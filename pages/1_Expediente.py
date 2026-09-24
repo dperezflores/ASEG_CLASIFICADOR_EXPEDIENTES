@@ -37,6 +37,7 @@ CLAVES_EXPEDIENTE = (
     "propuesta_clasificacion",
     "resultado_unidad_completa",
     "relaciones_globales_exactas",
+    "relaciones_globales_similitud_pdf",
 )
 
 
