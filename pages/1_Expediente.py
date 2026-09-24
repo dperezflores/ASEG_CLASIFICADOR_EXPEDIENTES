@@ -36,6 +36,7 @@ CLAVES_EXPEDIENTE = (
     "resultados_hibridos",
     "propuesta_clasificacion",
     "resultado_unidad_completa",
+    "ficha_documental_experimental",
     "relaciones_globales_exactas",
     "relaciones_globales_similitud_pdf",
 )
