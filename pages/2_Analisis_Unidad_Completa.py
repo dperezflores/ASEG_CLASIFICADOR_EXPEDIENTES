@@ -22,7 +22,7 @@ from services.unit_content_analysis_service import (
 from ui.common import mostrar_encabezado, requerir_expediente
 
 
-RESULTADO_UNIDAD_SCHEMA_VERSION = 2
+RESULTADO_UNIDAD_SCHEMA_VERSION = 3
 
 
 mostrar_encabezado(
@@ -46,11 +46,13 @@ mapa = construir_mapa_estructural(inventario)
 estimaciones = obtener_estimaciones_detectadas(mapa)
 
 st.info(
-    "Esta versión trabaja en tres etapas. Primero clasifica cada PDF por su "
-    "identidad documental. Después valida la integridad de los documentos con "
-    "código propio. Finalmente compara conjuntamente todos los archivos que "
-    "apuntan al código de la estimación para decidir cuál representa la unidad, "
-    "cuáles son componentes y cuáles son solo soporte."
+    "Esta versión separa identidad, equivalencia e integridad. Primero "
+    "clasifica cada PDF y obtiene un concepto candidato. Si propone un código "
+    "propio, valida de forma independiente que el documento sea documental y "
+    "funcionalmente equivalente al concepto del catálogo; solo entonces revisa "
+    "si está completo o es un extracto. Finalmente compara conjuntamente los "
+    "candidatos al código de la estimación para definir representante, "
+    "componentes y soportes."
 )
 
 if estimaciones.empty:
@@ -228,6 +230,9 @@ if (
     columnas_compatibilidad = {
         "Clasificación inicial": "",
         "Código inicial": "",
+        "Equivalencia funcional": "no_evaluada",
+        "Confianza equivalencia (%)": 0.0,
+        "Evidencia equivalencia": "",
         "Validación secundaria": "",
         "Alcance documental": "no_evaluado",
         "Relación comparativa": "",
@@ -299,6 +304,7 @@ if (
                 "Título detectado",
                 "Clasificación inicial",
                 "Código inicial",
+                "Equivalencia funcional",
                 "Validación secundaria",
                 "Alcance documental",
                 "Relación comparativa",
@@ -317,6 +323,10 @@ if (
         column_config={
             "Confianza (%)": st.column_config.NumberColumn(
                 "Confianza (%)",
+                format="%.1f %%",
+            ),
+            "Confianza equivalencia (%)": st.column_config.NumberColumn(
+                "Confianza equivalencia (%)",
                 format="%.1f %%",
             )
         },
@@ -420,6 +430,9 @@ if (
                     "Motivo de ruta",
                     "Clasificación inicial",
                     "Código inicial",
+                    "Equivalencia funcional",
+                    "Confianza equivalencia (%)",
+                    "Evidencia equivalencia",
                     "Validación secundaria",
                     "Alcance documental",
                     "Relación comparativa",
