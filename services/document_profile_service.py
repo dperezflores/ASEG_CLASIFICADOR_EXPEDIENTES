@@ -31,13 +31,21 @@ def analizar_muestra_fichas_documentales(
     rutas_pdf: list[str],
     modelo: str,
     on_progress=None,
-) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, dict, dict]:
+) -> tuple[
+    pd.DataFrame,
+    pd.DataFrame,
+    pd.DataFrame,
+    pd.DataFrame,
+    pd.DataFrame,
+    dict,
+    dict,
+]:
     """
-    Ejecuta una sola llamada multimodal por PDF seleccionado y construye una
-    representación tabular de la ficha documental canónica.
+    Ejecuta una sola llamada multimodal por PDF seleccionado y tabula la ficha
+    documental canónica V2.
 
-    Esta función es experimental y deliberadamente no conecta todavía la ficha
-    con catálogo, JEV ni el motor validado de estimaciones.
+    Sigue siendo un experimento aislado: no alimenta catálogo, JEV, estimaciones
+    ni codificación final.
     """
     rutas = [
         str(ruta)
@@ -71,6 +79,8 @@ def analizar_muestra_fichas_documentales(
 
     archivos_registros = []
     documentos_registros = []
+    registros_internos = []
+    relaciones_registros = []
     marcadores_registros = []
     perfiles_crudos = {}
 
@@ -78,6 +88,8 @@ def analizar_muestra_fichas_documentales(
     tiempo_total = 0.0
     tokens_entrada = 0
     tokens_salida = 0
+    relaciones_invalidas = 0
+    registros_rango_invalido = 0
 
     with ZipFile(BytesIO(contenido_zip)) as archivo_zip:
         total = len(rutas)
@@ -109,6 +121,10 @@ def analizar_muestra_fichas_documentales(
 
             fisico = perfil["physical_document"]
             logicos = perfil["logical_documents"]
+            relaciones = perfil.get(
+                "logical_relationships",
+                [],
+            )
 
             costo = float(perfil["cost_usd"])
             duracion = float(perfil["duration_s"])
@@ -137,11 +153,24 @@ def analizar_muestra_fichas_documentales(
                         fisico.get("is_compound", False)
                     ),
                     "Documentos lógicos detectados": len(logicos),
+                    "Registros internos detectados": sum(
+                        len(
+                            documento.get(
+                                "internal_records",
+                                [],
+                            )
+                        )
+                        for documento in logicos
+                    ),
+                    "Relaciones lógicas detectadas": len(relaciones),
                     "Calidad de lectura": str(
                         fisico.get("reading_quality", "")
                     ),
                     "Requiere OCR adicional": bool(
-                        fisico.get("needs_additional_ocr", False)
+                        fisico.get(
+                            "needs_additional_ocr",
+                            False,
+                        )
                     ),
                     "Resumen general": str(
                         fisico.get("general_summary", "")
@@ -159,6 +188,17 @@ def analizar_muestra_fichas_documentales(
                     "Tiempo (s)": duracion,
                 }
             )
+
+            ids_logicos = {
+                str(
+                    documento.get("logical_id")
+                    or f"logical_{indice_logico:02d}"
+                )
+                for indice_logico, documento in enumerate(
+                    logicos,
+                    start=1,
+                )
+            }
 
             for indice_logico, documento in enumerate(
                 logicos,
@@ -183,7 +223,10 @@ def analizar_muestra_fichas_documentales(
 
                 hechos = [
                     str(item).strip()
-                    for item in documento.get("key_facts", [])
+                    for item in documento.get(
+                        "key_facts",
+                        [],
+                    )
                     if str(item).strip()
                 ]
 
@@ -196,16 +239,40 @@ def analizar_muestra_fichas_documentales(
                         "Página final": fin,
                         "Rango válido": rango_valido,
                         "Título detectado": str(
-                            documento.get("detected_title", "")
+                            documento.get(
+                                "detected_title",
+                                "",
+                            )
                         ),
                         "Función formal": str(
-                            documento.get("formal_function", "")
+                            documento.get(
+                                "formal_function",
+                                "",
+                            )
                         ),
                         "Acto documentado": str(
-                            documento.get("documented_act", "")
+                            documento.get(
+                                "documented_act",
+                                "",
+                            )
+                        ),
+                        "Alcance de identidad": str(
+                            documento.get(
+                                "identity_scope",
+                                "",
+                            )
+                        ),
+                        "Límites de identidad": str(
+                            documento.get(
+                                "identity_limits",
+                                "",
+                            )
                         ),
                         "Alcance documental": str(
-                            documento.get("document_scope", "")
+                            documento.get(
+                                "document_scope",
+                                "",
+                            )
                         ),
                         "Texto representativo": str(
                             documento.get(
@@ -214,12 +281,110 @@ def analizar_muestra_fichas_documentales(
                             )
                         ),
                         "Datos clave": " | ".join(hechos),
-                        "Confianza (%)": round(confianza, 2),
+                        "Registros internos": len(
+                            documento.get(
+                                "internal_records",
+                                [],
+                            )
+                        ),
+                        "Confianza (%)": round(
+                            confianza,
+                            2,
+                        ),
                         "Evidencia": str(
                             documento.get("evidence", "")
                         ),
                     }
                 )
+
+                for registro in documento.get(
+                    "internal_records",
+                    [],
+                ):
+                    inicio_registro = int(
+                        registro.get("page_start") or 0
+                    )
+                    fin_registro = int(
+                        registro.get("page_end") or 0
+                    )
+                    rango_registro_valido = (
+                        1
+                        <= inicio_registro
+                        <= fin_registro
+                        <= paginas_reales
+                    )
+                    if not rango_registro_valido:
+                        registros_rango_invalido += 1
+
+                    confianza_registro = float(
+                        registro.get("confidence")
+                        or 0.0
+                    )
+                    if 0 <= confianza_registro <= 1:
+                        confianza_registro *= 100
+
+                    hechos_registro = [
+                        str(item).strip()
+                        for item in registro.get(
+                            "key_facts",
+                            [],
+                        )
+                        if str(item).strip()
+                    ]
+
+                    registros_internos.append(
+                        {
+                            "Archivo": str(
+                                meta.get("Archivo", "")
+                            ),
+                            "Ruta original": ruta,
+                            "ID lógico": logical_id,
+                            "ID registro": str(
+                                registro.get(
+                                    "record_id",
+                                    "",
+                                )
+                            ),
+                            "Tipo registro": str(
+                                registro.get(
+                                    "record_type",
+                                    "",
+                                )
+                            ),
+                            "Página inicial": (
+                                inicio_registro
+                            ),
+                            "Página final": fin_registro,
+                            "Rango válido": (
+                                rango_registro_valido
+                            ),
+                            "Etiqueta": str(
+                                registro.get(
+                                    "label",
+                                    "",
+                                )
+                            ),
+                            "Acto documentado": str(
+                                registro.get(
+                                    "documented_act",
+                                    "",
+                                )
+                            ),
+                            "Texto representativo": str(
+                                registro.get(
+                                    "representative_text",
+                                    "",
+                                )
+                            ),
+                            "Datos clave": " | ".join(
+                                hechos_registro
+                            ),
+                            "Confianza (%)": round(
+                                confianza_registro,
+                                2,
+                            ),
+                        }
+                    )
 
                 for marcador in documento.get(
                     "page_markers",
@@ -237,39 +402,122 @@ def analizar_muestra_fichas_documentales(
                             "ID lógico": logical_id,
                             "Página": pagina,
                             "Página válida": (
-                                1 <= pagina <= paginas_reales
+                                1
+                                <= pagina
+                                <= paginas_reales
                             ),
                             "Texto marcador": str(
-                                marcador.get("text", "")
+                                marcador.get(
+                                    "text",
+                                    "",
+                                )
                             ),
                         }
                     )
 
+            for relacion in relaciones:
+                source = str(
+                    relacion.get(
+                        "source_logical_id",
+                        "",
+                    )
+                )
+                target = str(
+                    relacion.get(
+                        "target_logical_id",
+                        "",
+                    )
+                )
+                ids_validos = (
+                    source in ids_logicos
+                    and target in ids_logicos
+                    and source != target
+                )
+                if not ids_validos:
+                    relaciones_invalidas += 1
+
+                confianza_relacion = float(
+                    relacion.get("confidence")
+                    or 0.0
+                )
+                if 0 <= confianza_relacion <= 1:
+                    confianza_relacion *= 100
+
+                relaciones_registros.append(
+                    {
+                        "Archivo": str(
+                            meta.get("Archivo", "")
+                        ),
+                        "Ruta original": ruta,
+                        "Origen": source,
+                        "Relación": str(
+                            relacion.get(
+                                "relation_type",
+                                "",
+                            )
+                        ),
+                        "Destino": target,
+                        "IDs válidos": ids_validos,
+                        "Confianza (%)": round(
+                            confianza_relacion,
+                            2,
+                        ),
+                        "Evidencia": str(
+                            relacion.get(
+                                "evidence",
+                                "",
+                            )
+                        ),
+                    }
+                )
+
     archivos = pd.DataFrame(archivos_registros)
     documentos = pd.DataFrame(documentos_registros)
+    registros = pd.DataFrame(registros_internos)
+    relaciones = pd.DataFrame(relaciones_registros)
     marcadores = pd.DataFrame(marcadores_registros)
 
     resumen = {
         "pdf_analizados": len(rutas),
         "llamadas_multimodales": len(rutas),
         "documentos_logicos": len(documentos),
+        "registros_internos": len(registros),
+        "relaciones_logicas": len(relaciones),
         "documentos_compuestos": (
-            int(archivos["Documento compuesto"].sum())
+            int(
+                archivos[
+                    "Documento compuesto"
+                ].sum()
+            )
             if not archivos.empty
             else 0
         ),
         "requieren_ocr_adicional": (
-            int(archivos["Requiere OCR adicional"].sum())
+            int(
+                archivos[
+                    "Requiere OCR adicional"
+                ].sum()
+            )
             if not archivos.empty
             else 0
         ),
         "rangos_invalidos": (
-            int((~documentos["Rango válido"]).sum())
+            int(
+                (~documentos["Rango válido"]).sum()
+            )
             if not documentos.empty
             else 0
         ),
+        "registros_rango_invalido": (
+            registros_rango_invalido
+        ),
+        "relaciones_invalidas": relaciones_invalidas,
         "conteos_pagina_incorrectos": (
-            int((~archivos["Conteo páginas coincide"]).sum())
+            int(
+                (~archivos[
+                    "Conteo páginas coincide"
+                ]).sum()
+            )
             if not archivos.empty
             else 0
         ),
@@ -282,6 +530,8 @@ def analizar_muestra_fichas_documentales(
     return (
         archivos,
         documentos,
+        registros,
+        relaciones,
         marcadores,
         resumen,
         perfiles_crudos,
