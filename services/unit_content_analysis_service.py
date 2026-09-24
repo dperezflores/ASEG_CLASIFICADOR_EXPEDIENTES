@@ -13,6 +13,7 @@ from services.evaluation_service import extraer_paginas_pdf_del_zip
 from services.openai_multimodal_service import (
     clasificar_pdf_multimodal,
     comparar_candidatos_unidad_multimodal,
+    validar_equivalencia_documental_multimodal,
     validar_integridad_documental_multimodal,
 )
 
@@ -133,21 +134,22 @@ def analizar_componente_unidad(
     consecutivo: int = 1,
 ) -> dict:
     """
-    Flujo en dos etapas.
+    Flujo documental controlado.
 
     ETAPA 1
-    Identifica el documento y su posible equivalencia con el catálogo,
+    Identifica el documento y propone un concepto candidato del catálogo,
     sin contexto de carpeta ni nombre real.
 
-    ETAPA 2
-    Solo si hace falta:
-    - si apunta al código de la propia unidad, decide si es representante,
-      componente o soporte;
-    - si apunta a un código propio distinto, valida únicamente si el archivo
-      es completo o un parcial/extracto.
+    ETAPA 2A
+    Si el candidato tiene un código propio distinto al de la unidad, valida
+    de forma independiente la equivalencia documental y funcional.
 
-    La segunda etapa nunca puede cambiar un código propio válido por el código
-    de la estimación.
+    ETAPA 2B
+    Solo si la equivalencia fue confirmada, valida si el documento es completo
+    o un parcial/extracto.
+
+    Los candidatos al código de la propia unidad se reservan para la
+    comparación conjunta posterior.
     """
     diagnostico = diagnosticar_componente_pdf(
         contenido_zip,
@@ -200,6 +202,9 @@ def analizar_componente_unidad(
     )
 
     alcance = "no_evaluado"
+    equivalencia = "no_evaluada"
+    confianza_equivalencia = 0.0
+    evidencia_equivalencia = ""
     relacion = "soporte"
     validacion_secundaria = "No requerida"
     evidencia_secundaria = ""
@@ -224,9 +229,6 @@ def analizar_componente_unidad(
         _codigo_sin_extension(codigo_inicial).upper()
         == codigo_unidad.upper()
     ):
-        # No se decide el papel de este archivo de forma aislada.
-        # Todos los candidatos al código de la unidad se comparan juntos
-        # después de terminar la clasificación individual.
         relacion = "candidato_unidad"
         validacion_secundaria = "Pendiente comparación conjunta"
         rol = "Candidato a comparación de unidad"
@@ -241,7 +243,7 @@ def analizar_componente_unidad(
             paginas_contexto,
         )
 
-        etapa2 = validar_integridad_documental_multimodal(
+        etapa_equivalencia = validar_equivalencia_documental_multimodal(
             documento_alias="componente_unidad",
             pdf_bytes=pdf_contexto,
             modelo=modelo_multimodal,
@@ -249,42 +251,96 @@ def analizar_componente_unidad(
             identidad_detectada=titulo,
         )
 
-        alcance = str(etapa2["Alcance documental"])
-        confianza_alcance = float(
-            etapa2["Confianza alcance (%)"]
+        equivalencia = str(
+            etapa_equivalencia["Equivalencia funcional"]
+        )
+        confianza_equivalencia = float(
+            etapa_equivalencia["Confianza equivalencia (%)"]
+        )
+        evidencia_equivalencia = str(
+            etapa_equivalencia["Evidencia equivalencia"]
         )
         confianza_final = min(
             confianza_inicial,
-            confianza_alcance,
+            confianza_equivalencia,
         )
-        evidencia_secundaria = str(
-            etapa2["Evidencia alcance"]
+        costo += float(
+            etapa_equivalencia["Costo equivalencia (USD)"]
         )
-        costo += float(etapa2["Costo alcance (USD)"])
-        tiempo += float(etapa2["Tiempo alcance (s)"])
-        validacion_secundaria = "Integridad documental"
-        relacion = "documento_independiente"
+        tiempo += float(
+            etapa_equivalencia["Tiempo equivalencia (s)"]
+        )
 
-        if alcance == "completo":
-            coincide_final = True
-            concepto_final = concepto_inicial
-            codigo_final = codigo_inicial
-            rol = "Posible documento con código propio"
-        elif alcance == "parcial_extracto":
-            rol = "Soporte / extracto de otro documento"
+        if equivalencia == "equivalente":
+            etapa_integridad = validar_integridad_documental_multimodal(
+                documento_alias="componente_unidad",
+                pdf_bytes=pdf_contexto,
+                modelo=modelo_multimodal,
+                concepto_objetivo=concepto_inicial,
+                identidad_detectada=titulo,
+            )
+
+            alcance = str(
+                etapa_integridad["Alcance documental"]
+            )
+            confianza_alcance = float(
+                etapa_integridad["Confianza alcance (%)"]
+            )
+            confianza_final = min(
+                confianza_final,
+                confianza_alcance,
+            )
+            evidencia_secundaria = str(
+                etapa_integridad["Evidencia alcance"]
+            )
+            costo += float(
+                etapa_integridad["Costo alcance (USD)"]
+            )
+            tiempo += float(
+                etapa_integridad["Tiempo alcance (s)"]
+            )
+            validacion_secundaria = (
+                "Equivalencia documental-funcional + integridad"
+            )
+            relacion = "documento_independiente"
+
+            if alcance == "completo":
+                coincide_final = True
+                concepto_final = concepto_inicial
+                codigo_final = codigo_inicial
+                rol = "Posible documento con código propio"
+            elif alcance == "parcial_extracto":
+                rol = "Soporte / extracto de otro documento"
+            else:
+                relacion = "indeterminado"
+                rol = "Revisión necesaria"
+
+        elif equivalencia == "no_equivalente":
+            validacion_secundaria = (
+                "Equivalencia documental-funcional"
+            )
+            relacion = "soporte"
+            rol = "Soporte / no equivalente al concepto candidato"
+
         else:
+            validacion_secundaria = (
+                "Equivalencia documental-funcional"
+            )
             relacion = "indeterminado"
             rol = "Revisión necesaria"
 
-    if evidencia_secundaria:
-        evidencia = (
-            f"Etapa 1: {evidencia_inicial} "
-            f"Validación secundaria: {evidencia_secundaria}"
+    evidencias = [f"Etapa 1: {evidencia_inicial}"]
+    if evidencia_equivalencia:
+        evidencias.append(
+            "Equivalencia: " + evidencia_equivalencia
         )
-    else:
-        evidencia = evidencia_inicial
+    if evidencia_secundaria:
+        evidencias.append(
+            "Integridad: " + evidencia_secundaria
+        )
+    evidencia = " ".join(evidencias)
 
-    if validacion_secundaria == "Integridad documental":
+    if equivalencia != "no_evaluada":
         paginas_reporte = _paginas_integridad(
             diagnostico["Páginas totales"]
         )
@@ -293,19 +349,25 @@ def analizar_componente_unidad(
             diagnostico["Páginas totales"]
         )
 
-    paginas_usadas = ", ".join(str(p) for p in paginas_reporte)
+    paginas_usadas = ", ".join(
+        str(p) for p in paginas_reporte
+    )
 
     return {
         "Ruta utilizada": (
-            "Multimodal: clasificación inicial + validación selectiva"
+            "Multimodal: identidad + equivalencia + integridad selectiva"
         ),
         "Motivo de ruta": (
-            "La clasificación inicial conserva la identidad documental; "
-            "la segunda etapa solo valida relación o integridad cuando aplica."
+            "La clasificación inicial propone una identidad y un concepto; "
+            "los códigos propios solo se aceptan después de validar de forma "
+            "independiente equivalencia documental-funcional e integridad."
         ),
         "Título detectado": titulo,
         "Clasificación inicial": concepto_inicial,
         "Código inicial": codigo_inicial,
+        "Equivalencia funcional": equivalencia,
+        "Confianza equivalencia (%)": confianza_equivalencia,
+        "Evidencia equivalencia": evidencia_equivalencia,
         "Validación secundaria": validacion_secundaria,
         "Alcance documental": alcance,
         "Relación con la unidad": relacion,
@@ -389,6 +451,9 @@ def analizar_unidad_completa(
                 "Título detectado": "",
                 "Clasificación inicial": "",
                 "Código inicial": "",
+                "Equivalencia funcional": "indeterminado",
+                "Confianza equivalencia (%)": 0.0,
+                "Evidencia equivalencia": "",
                 "Validación secundaria": "",
                 "Alcance documental": "indeterminado",
                 "Relación con la unidad": "indeterminado",
