@@ -36,6 +36,19 @@ CODIGOS_IDENTIDAD_PURA_SELECTIVA = frozenset(
     }
 )
 
+# Primera versión controlada: solo estos códigos se consideran de
+# representación única para resolver conflictos por confianza.
+CODIGOS_REPRESENTACION_UNICA_CONFIANZA = frozenset(
+    {
+        "ETR_LSI_ETR",
+        "ETR_LSI_FIN",
+        "ETR_LSI_GVO",
+        "CNT_LSI_PTC",
+    }
+)
+CONFIANZA_MIN_GANADOR_CONFLICTO = 90.0
+DIFERENCIA_MIN_CONFLICTO = 10.0
+
 
 def diagnosticar_componente_pdf(
     contenido_zip: bytes,
@@ -949,6 +962,212 @@ def consolidar_candidatos_unidad(
     return salida, pd.DataFrame(filas_comparacion), meta
 
 
+
+def _resolver_conflictos_codigo_por_confianza(
+    resultados: pd.DataFrame,
+    codigo_unidad: str,
+) -> pd.DataFrame:
+    """
+    Resuelve de forma determinística conflictos entre varios documentos que
+    terminaron proponiendo el mismo código propio de representación única.
+
+    No hace nuevas llamadas de IA. Usa la confianza final consolidada ya
+    calculada por el flujo. Solo selecciona un ganador cuando:
+    - el mejor candidato alcanza una confianza mínima; y
+    - supera al segundo candidato por una diferencia mínima.
+
+    Si el conflicto no es concluyente, ningún documento recibe el código hasta
+    revisión manual. La clasificación inicial se conserva para trazabilidad.
+    """
+    salida = resultados.copy()
+
+    columnas = {
+        "Resolución conflicto código": "No aplica",
+        "Código en conflicto": "",
+        "Confianza conflicto (%)": 0.0,
+        "Diferencia confianza conflicto (%)": 0.0,
+        "Ganador conflicto": "",
+        "Motivo conflicto": "",
+    }
+    for columna, valor in columnas.items():
+        if columna not in salida.columns:
+            salida[columna] = valor
+
+    if salida.empty:
+        return salida
+
+    codigo_unidad_normalizado = _codigo_sin_extension(
+        codigo_unidad
+    ).upper()
+
+    candidatos = salida[
+        salida["Error"].astype(str).str.strip().eq("")
+        & salida["Coincide catálogo"].astype(bool)
+        & salida["Código de catálogo"].astype(str).str.strip().ne("")
+    ].copy()
+
+    if candidatos.empty:
+        return salida
+
+    candidatos["_codigo_conflicto"] = (
+        candidatos["Código de catálogo"]
+        .astype(str)
+        .apply(_codigo_sin_extension)
+        .str.upper()
+    )
+
+    candidatos = candidatos[
+        candidatos["_codigo_conflicto"].isin(
+            CODIGOS_REPRESENTACION_UNICA_CONFIANZA
+        )
+        & candidatos["_codigo_conflicto"].ne(
+            codigo_unidad_normalizado
+        )
+    ]
+
+    if candidatos.empty:
+        return salida
+
+    for codigo, bloque in candidatos.groupby(
+        "_codigo_conflicto",
+        sort=False,
+    ):
+        if len(bloque) <= 1:
+            continue
+
+        puntajes = pd.to_numeric(
+            bloque["Confianza (%)"],
+            errors="coerce",
+        ).fillna(0.0)
+
+        orden = puntajes.sort_values(
+            ascending=False,
+            kind="stable",
+        )
+        indice_ganador = orden.index[0]
+        confianza_ganador = float(orden.iloc[0])
+        confianza_segundo = float(orden.iloc[1])
+        diferencia = confianza_ganador - confianza_segundo
+        archivo_ganador = str(
+            salida.at[indice_ganador, "Archivo"]
+        )
+
+        conflicto_concluyente = (
+            confianza_ganador
+            >= CONFIANZA_MIN_GANADOR_CONFLICTO
+            and diferencia
+            >= DIFERENCIA_MIN_CONFLICTO
+        )
+
+        for indice in bloque.index:
+            confianza_actual = float(
+                pd.to_numeric(
+                    pd.Series(
+                        [salida.at[indice, "Confianza (%)"]]
+                    ),
+                    errors="coerce",
+                ).fillna(0.0).iloc[0]
+            )
+            salida.at[
+                indice,
+                "Código en conflicto",
+            ] = codigo
+            salida.at[
+                indice,
+                "Confianza conflicto (%)",
+            ] = confianza_actual
+            salida.at[
+                indice,
+                "Diferencia confianza conflicto (%)",
+            ] = round(diferencia, 2)
+            salida.at[
+                indice,
+                "Ganador conflicto",
+            ] = archivo_ganador
+
+            if conflicto_concluyente:
+                salida.at[
+                    indice,
+                    "Motivo conflicto",
+                ] = (
+                    f"Confianza máxima {confianza_ganador:.1f}% "
+                    f"vs. segundo candidato {confianza_segundo:.1f}% "
+                    f"(diferencia {diferencia:.1f} pp)."
+                )
+
+                if indice == indice_ganador:
+                    salida.at[
+                        indice,
+                        "Resolución conflicto código",
+                    ] = "Ganador por confianza"
+                else:
+                    salida.at[
+                        indice,
+                        "Resolución conflicto código",
+                    ] = "Desplazado por mayor confianza"
+                    salida.at[
+                        indice,
+                        "Coincide catálogo",
+                    ] = False
+                    salida.at[
+                        indice,
+                        "Concepto propuesto",
+                    ] = ""
+                    salida.at[
+                        indice,
+                        "Código de catálogo",
+                    ] = ""
+                    salida.at[
+                        indice,
+                        "Relación con la unidad",
+                    ] = "soporte"
+                    salida.at[
+                        indice,
+                        "Rol propuesto en la unidad",
+                    ] = (
+                        "Soporte / candidato desplazado "
+                        "por conflicto de código"
+                    )
+            else:
+                salida.at[
+                    indice,
+                    "Resolución conflicto código",
+                ] = "Revisión manual - conflicto no concluyente"
+                salida.at[
+                    indice,
+                    "Motivo conflicto",
+                ] = (
+                    f"Mejor confianza {confianza_ganador:.1f}%, "
+                    f"segunda {confianza_segundo:.1f}% "
+                    f"(diferencia {diferencia:.1f} pp). "
+                    f"Se exige >= {CONFIANZA_MIN_GANADOR_CONFLICTO:.0f}% "
+                    "para el ganador y >= "
+                    f"{DIFERENCIA_MIN_CONFLICTO:.0f} pp de diferencia."
+                )
+                salida.at[
+                    indice,
+                    "Coincide catálogo",
+                ] = False
+                salida.at[
+                    indice,
+                    "Concepto propuesto",
+                ] = ""
+                salida.at[
+                    indice,
+                    "Código de catálogo",
+                ] = ""
+                salida.at[
+                    indice,
+                    "Relación con la unidad",
+                ] = "indeterminado"
+                salida.at[
+                    indice,
+                    "Rol propuesto en la unidad",
+                ] = "Revisión necesaria por conflicto de código"
+
+    return salida
+
+
 def agrupar_resultados_unidad(
     resultados: pd.DataFrame,
     procedimiento: str,
@@ -971,6 +1190,11 @@ def agrupar_resultados_unidad(
     codigo_unidad = _codigo_unidad(
         procedimiento,
         consecutivo,
+    )
+
+    salida = _resolver_conflictos_codigo_por_confianza(
+        resultados=salida,
+        codigo_unidad=codigo_unidad,
     )
 
     grupos = []
@@ -1038,7 +1262,20 @@ def agrupar_resultados_unidad(
 
         if relacion == "soporte":
             grupos.append("Soporte / fuera de catálogo")
-            relaciones.append("Componente de soporte")
+            if (
+                str(
+                    fila.get(
+                        "Resolución conflicto código",
+                        "",
+                    )
+                )
+                == "Desplazado por mayor confianza"
+            ):
+                relaciones.append(
+                    "Candidato desplazado por conflicto de código"
+                )
+            else:
+                relaciones.append("Componente de soporte")
             acciones.append("Conservar nombre original")
             continue
 
