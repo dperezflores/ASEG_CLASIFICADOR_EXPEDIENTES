@@ -13,6 +13,8 @@ from services.evaluation_service import extraer_paginas_pdf_del_zip
 from services.openai_multimodal_service import (
     clasificar_pdf_multimodal,
     comparar_candidatos_unidad_multimodal,
+    identificar_documento_multimodal,
+    resolver_catalogo_desde_identidad_multimodal,
     validar_equivalencia_documental_multimodal,
     validar_integridad_documental_multimodal,
 )
@@ -21,6 +23,7 @@ from services.openai_multimodal_service import (
 PAGINAS_INICIALES = 2
 MAX_INTENTOS_ANALISIS = 2
 MAX_PAGINAS_INTEGRIDAD_COMPLETA = 10
+USAR_IDENTIDAD_PURA = True
 
 
 def diagnosticar_componente_pdf(
@@ -124,7 +127,7 @@ def _extraer_pdf_paginas(
     )
 
 
-def analizar_componente_unidad(
+def _analizar_componente_unidad_legacy(
     contenido_zip: bytes,
     ruta_pdf: str,
     catalogo: pd.DataFrame,
@@ -386,6 +389,305 @@ def analizar_componente_unidad(
     }
 
 
+
+def _analizar_componente_unidad_identidad_pura(
+    contenido_zip: bytes,
+    ruta_pdf: str,
+    catalogo: pd.DataFrame,
+    procedimiento: str,
+    modelo_multimodal: str,
+    tipo_unidad: str = "Estimación",
+    consecutivo: int = 1,
+) -> dict:
+    """
+    Flujo experimental controlado:
+    1) identidad pura sin catálogo;
+    2) resolución catálogo desde identidad fija;
+    3) integridad solo para códigos propios equivalentes;
+    4) comparación conjunta para candidatos a la unidad.
+    """
+    diagnostico = diagnosticar_componente_pdf(
+        contenido_zip,
+        ruta_pdf,
+    )
+
+    catalogo_operativo, _ = construir_catalogo_operativo_estimacion(
+        catalogo=catalogo,
+        procedimiento=procedimiento,
+        consecutivo=int(consecutivo),
+    )
+
+    codigo_unidad = _codigo_unidad(
+        procedimiento,
+        consecutivo,
+    )
+
+    paginas_identidad = list(
+        range(
+            1,
+            min(
+                int(diagnostico["Páginas totales"]),
+                PAGINAS_INICIALES,
+            )
+            + 1,
+        )
+    )
+    pdf_identidad = _extraer_pdf_paginas(
+        contenido_zip,
+        ruta_pdf,
+        paginas_identidad,
+    )
+
+    identidad = identificar_documento_multimodal(
+        documento_alias="documento_sin_catalogo",
+        pdf_bytes=pdf_identidad,
+        modelo=modelo_multimodal,
+    )
+
+    titulo = str(identidad["Título detectado"])
+    funcion_formal = str(identidad["Función formal"])
+    acto_documentado = str(identidad["Acto documentado"])
+    confianza_identidad = float(
+        identidad["Confianza identidad (%)"]
+    )
+    evidencia_identidad = str(
+        identidad["Evidencia identidad"]
+    )
+
+    costo = float(identidad["Costo identidad (USD)"])
+    tiempo = float(identidad["Tiempo identidad (s)"])
+
+    paginas_resolucion = _paginas_contexto(
+        diagnostico["Páginas totales"]
+    )
+    pdf_resolucion = _extraer_pdf_paginas(
+        contenido_zip,
+        ruta_pdf,
+        paginas_resolucion,
+    )
+
+    resolucion = resolver_catalogo_desde_identidad_multimodal(
+        documento_alias="documento_identificado",
+        pdf_bytes=pdf_resolucion,
+        catalogo=catalogo_operativo,
+        modelo=modelo_multimodal,
+        identidad_detectada=titulo,
+        funcion_formal=funcion_formal,
+        acto_documentado=acto_documentado,
+        codigo_unidad=codigo_unidad,
+    )
+
+    concepto_inicial = str(
+        resolucion["Resultado catálogo"]
+    )
+    codigo_inicial = str(
+        resolucion["Código candidato"]
+    )
+    equivalencia = str(
+        resolucion["Relación catálogo"]
+    )
+    confianza_resolucion = float(
+        resolucion["Confianza resolución (%)"]
+    )
+    evidencia_resolucion = str(
+        resolucion["Evidencia resolución"]
+    )
+
+    costo += float(resolucion["Costo resolución (USD)"])
+    tiempo += float(resolucion["Tiempo resolución (s)"])
+
+    confianza_final = min(
+        confianza_identidad,
+        confianza_resolucion,
+    )
+
+    alcance = "no_evaluado"
+    relacion = "soporte"
+    validacion_secundaria = (
+        "Identidad pura + resolución de catálogo"
+    )
+    evidencia_integridad = ""
+    coincide_final = False
+    concepto_final = ""
+    codigo_final = ""
+
+    concepto_relacionado = (
+        concepto_inicial if codigo_inicial else ""
+    )
+    codigo_relacionado = codigo_inicial
+
+    codigo_inicial_normalizado = _codigo_sin_extension(
+        codigo_inicial
+    ).upper()
+
+    if (
+        codigo_inicial_normalizado == codigo_unidad.upper()
+        and equivalencia in ("candidato_unidad", "equivalente")
+    ):
+        relacion = "candidato_unidad"
+        equivalencia = "candidato_unidad"
+        validacion_secundaria = (
+            "Pendiente comparación conjunta"
+        )
+        rol = "Candidato a comparación de unidad"
+
+    elif codigo_inicial and equivalencia == "equivalente":
+        paginas_integridad = _paginas_integridad(
+            diagnostico["Páginas totales"]
+        )
+        pdf_integridad = _extraer_pdf_paginas(
+            contenido_zip,
+            ruta_pdf,
+            paginas_integridad,
+        )
+
+        etapa_integridad = validar_integridad_documental_multimodal(
+            documento_alias="documento_identificado",
+            pdf_bytes=pdf_integridad,
+            modelo=modelo_multimodal,
+            concepto_objetivo=concepto_inicial,
+            identidad_detectada=titulo,
+        )
+
+        alcance = str(
+            etapa_integridad["Alcance documental"]
+        )
+        confianza_alcance = float(
+            etapa_integridad["Confianza alcance (%)"]
+        )
+        confianza_final = min(
+            confianza_final,
+            confianza_alcance,
+        )
+        evidencia_integridad = str(
+            etapa_integridad["Evidencia alcance"]
+        )
+        costo += float(
+            etapa_integridad["Costo alcance (USD)"]
+        )
+        tiempo += float(
+            etapa_integridad["Tiempo alcance (s)"]
+        )
+
+        validacion_secundaria = (
+            "Resolución de catálogo + integridad"
+        )
+        relacion = "documento_independiente"
+
+        if alcance == "completo":
+            coincide_final = True
+            concepto_final = concepto_inicial
+            codigo_final = codigo_inicial
+            rol = "Posible documento con código propio"
+        elif alcance == "parcial_extracto":
+            rol = "Soporte / extracto de otro documento"
+        else:
+            relacion = "indeterminado"
+            rol = "Revisión necesaria"
+
+    elif equivalencia == "indeterminado":
+        relacion = "indeterminado"
+        rol = "Revisión necesaria"
+
+    else:
+        relacion = "soporte"
+        rol = "Soporte / fuera de catálogo"
+
+    evidencias = [
+        "Identidad pura: " + evidencia_identidad,
+        "Resolución catálogo: " + evidencia_resolucion,
+    ]
+    if evidencia_integridad:
+        evidencias.append(
+            "Integridad: " + evidencia_integridad
+        )
+
+    paginas_reporte = sorted(
+        set(
+            paginas_identidad
+            + paginas_resolucion
+            + (
+                _paginas_integridad(
+                    diagnostico["Páginas totales"]
+                )
+                if evidencia_integridad
+                else []
+            )
+        )
+    )
+
+    return {
+        "Ruta utilizada": (
+            "Experimental: identidad pura -> catálogo -> integridad selectiva"
+        ),
+        "Motivo de ruta": (
+            "La primera llamada no recibe catálogo. La identidad queda fija "
+            "antes de comparar contra conceptos institucionales."
+        ),
+        "Título detectado": titulo,
+        "Función formal": funcion_formal,
+        "Acto documentado": acto_documentado,
+        "Confianza identidad (%)": confianza_identidad,
+        "Clasificación inicial": concepto_inicial,
+        "Código inicial": codigo_inicial,
+        "Equivalencia funcional": equivalencia,
+        "Confianza equivalencia (%)": confianza_resolucion,
+        "Evidencia equivalencia": evidencia_resolucion,
+        "Validación secundaria": validacion_secundaria,
+        "Alcance documental": alcance,
+        "Relación con la unidad": relacion,
+        "Concepto relacionado": concepto_relacionado,
+        "Código relacionado": codigo_relacionado,
+        "Coincide catálogo": coincide_final,
+        "Concepto propuesto": concepto_final,
+        "Código de catálogo": codigo_final,
+        "Confianza (%)": confianza_final,
+        "Rol propuesto en la unidad": rol,
+        "Evidencia": " ".join(evidencias),
+        "Modelo": str(identidad["Modelo identidad"]),
+        "Costo (USD)": costo,
+        "Tiempo (s)": tiempo,
+        "Páginas usadas": ", ".join(
+            str(p) for p in paginas_reporte
+        ),
+    }
+
+
+def analizar_componente_unidad(
+    contenido_zip: bytes,
+    ruta_pdf: str,
+    catalogo: pd.DataFrame,
+    procedimiento: str,
+    modelo_multimodal: str,
+    tipo_unidad: str = "Estimación",
+    consecutivo: int = 1,
+) -> dict:
+    """
+    Punto único de entrada. El flujo anterior queda intacto como respaldo.
+    Para regresar de inmediato basta cambiar USAR_IDENTIDAD_PURA a False.
+    """
+    if USAR_IDENTIDAD_PURA:
+        return _analizar_componente_unidad_identidad_pura(
+            contenido_zip=contenido_zip,
+            ruta_pdf=ruta_pdf,
+            catalogo=catalogo,
+            procedimiento=procedimiento,
+            modelo_multimodal=modelo_multimodal,
+            tipo_unidad=tipo_unidad,
+            consecutivo=consecutivo,
+        )
+
+    return _analizar_componente_unidad_legacy(
+        contenido_zip=contenido_zip,
+        ruta_pdf=ruta_pdf,
+        catalogo=catalogo,
+        procedimiento=procedimiento,
+        modelo_multimodal=modelo_multimodal,
+        tipo_unidad=tipo_unidad,
+        consecutivo=consecutivo,
+    )
+
+
 def analizar_unidad_completa(
     contenido_zip: bytes,
     archivos_pdf: pd.DataFrame,
@@ -449,6 +751,9 @@ def analizar_unidad_completa(
                 "Ruta utilizada": "Error",
                 "Motivo de ruta": "",
                 "Título detectado": "",
+                "Función formal": "",
+                "Acto documentado": "",
+                "Confianza identidad (%)": 0.0,
                 "Clasificación inicial": "",
                 "Código inicial": "",
                 "Equivalencia funcional": "indeterminado",
@@ -515,14 +820,37 @@ def consolidar_candidatos_unidad(
         consecutivo,
     )
 
-    mascara = (
+    mascara_codigo = (
         salida["Código inicial"]
         .astype(str)
         .apply(_codigo_sin_extension)
         .str.upper()
         == codigo_unidad.upper()
-    ) & (
+    )
+    mascara_sin_error = (
         salida["Error"].astype(str).str.strip() == ""
+    )
+
+    if "Equivalencia funcional" in salida.columns:
+        equivalencias = (
+            salida["Equivalencia funcional"]
+            .astype(str)
+            .str.strip()
+            .str.lower()
+        )
+        mascara_relacion = equivalencias.isin(
+            ["candidato_unidad", "no_evaluada"]
+        )
+    else:
+        mascara_relacion = pd.Series(
+            True,
+            index=salida.index,
+        )
+
+    mascara = (
+        mascara_codigo
+        & mascara_sin_error
+        & mascara_relacion
     )
 
     candidatos_df = salida[mascara].copy()
