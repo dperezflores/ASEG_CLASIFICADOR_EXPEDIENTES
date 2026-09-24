@@ -101,9 +101,11 @@ c2.metric("PDF directos", len(archivos_pdf))
 c3.metric("Procedimiento", procedimiento)
 
 st.caption(
-    "La IA no recibe el nombre real ni la ruta. La clasificación inicial "
-    "se conserva. Los códigos propios se protegen y los candidatos al código "
-    "de la estimación se resuelven mediante una comparación conjunta."
+    "La IA no recibe el nombre real ni la ruta. Un código propio solo se "
+    "acepta si supera primero la validación independiente de equivalencia "
+    "documental-funcional y después, cuando corresponde, la de integridad. "
+    "Los candidatos al código de la estimación se resuelven mediante una "
+    "comparación conjunta."
 )
 
 if not cambios_familias.empty:
@@ -305,6 +307,7 @@ if (
                 "Clasificación inicial",
                 "Código inicial",
                 "Equivalencia funcional",
+                "Confianza equivalencia (%)",
                 "Validación secundaria",
                 "Alcance documental",
                 "Relación comparativa",
