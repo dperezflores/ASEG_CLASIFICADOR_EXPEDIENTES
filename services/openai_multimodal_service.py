@@ -135,6 +135,331 @@ def _extraer_output_text(respuesta: dict) -> str:
     return texto
 
 
+def identificar_documento_multimodal(
+    documento_alias: str,
+    pdf_bytes: bytes,
+    modelo: str,
+) -> dict:
+    """
+    Identidad documental pura.
+
+    No recibe catálogo, códigos, nombre real ni ruta. Su única tarea es
+    describir qué documento es y qué función cumple según su propio contenido.
+    """
+    if modelo not in MODELOS:
+        raise OpenAIMultimodalError(f"Modelo no admitido: {modelo}")
+
+    if len(pdf_bytes) >= 50 * 1024 * 1024:
+        raise OpenAIMultimodalError(
+            f"{documento_alias} supera el límite de 50 MB por archivo."
+        )
+
+    prompt = (
+        "Analiza este archivo de un expediente de obra pública usando "
+        "exclusivamente su contenido visual y textual. NO tienes acceso a un "
+        "catálogo y NO debes intentar adivinar códigos. No uses ni infieras "
+        "información del nombre del archivo ni de su ruta.\n\n"
+        "Tu única tarea es establecer la IDENTIDAD DOCUMENTAL PROPIA del "
+        "archivo. Describe qué clase de documento es por su función formal, "
+        "qué acto o hecho documenta y para qué sirve dentro del expediente.\n\n"
+        "Reglas estrictas:\n"
+        "1. Identifica el documento por lo que ES, no por la etapa a la que "
+        "pertenece ni por otros documentos que mencione.\n"
+        "2. No conviertas un soporte en el documento principal al que hace "
+        "referencia. Por ejemplo, un recibo que menciona un finiquito sigue "
+        "siendo un recibo; una entrega física sigue siendo una entrega física "
+        "aunque esté relacionada con una entrega-recepción administrativa.\n"
+        "3. Distingue entre documentos cercanos: presupuesto de referencia, "
+        "propuesta, contratado, definitivo o finiquitado; diferentes tipos de "
+        "fianzas o garantías; actas materiales frente a actos administrativos "
+        "formales.\n"
+        "4. Si el archivo parece contener más de una identidad documental, "
+        "indícalo en la evidencia, pero proporciona como detected_title la "
+        "identidad predominante visible en las páginas recibidas.\n"
+        "5. No evalúes todavía si el documento pertenece a un catálogo ni si "
+        "merece un código."
+    )
+
+    schema = {
+        "type": "object",
+        "properties": {
+            "detected_title": {"type": "string"},
+            "formal_function": {"type": "string"},
+            "documented_act": {"type": "string"},
+            "confidence": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 100,
+            },
+            "evidence": {"type": "string"},
+        },
+        "required": [
+            "detected_title",
+            "formal_function",
+            "documented_act",
+            "confidence",
+            "evidence",
+        ],
+        "additionalProperties": False,
+    }
+
+    encoded = base64.b64encode(pdf_bytes).decode("ascii")
+    payload = {
+        "model": modelo,
+        "reasoning": {"effort": "low"},
+        "input": [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "input_file",
+                        "filename": f"{documento_alias}.pdf",
+                        "file_data": (
+                            "data:application/pdf;base64," + encoded
+                        ),
+                        "detail": "high",
+                    },
+                    {"type": "input_text", "text": prompt},
+                ],
+            }
+        ],
+        "text": {
+            "format": {
+                "type": "json_schema",
+                "name": "pure_document_identity",
+                "strict": True,
+                "schema": schema,
+            }
+        },
+        "max_output_tokens": 550,
+    }
+
+    inicio = time.perf_counter()
+    respuesta = _request_json(
+        "POST",
+        "/responses",
+        payload,
+        timeout=240,
+    )
+    duracion = time.perf_counter() - inicio
+
+    try:
+        resultado = json.loads(_extraer_output_text(respuesta))
+    except json.JSONDecodeError as error:
+        raise OpenAIMultimodalError(
+            "OpenAI devolvió una identidad documental inválida."
+        ) from error
+
+    usage = respuesta.get("usage") or {}
+    input_tokens = int(usage.get("input_tokens") or 0)
+    output_tokens = int(usage.get("output_tokens") or 0)
+    precios = MODELOS[modelo]
+    costo = (
+        input_tokens / 1_000_000 * precios["input_per_million"]
+        + output_tokens / 1_000_000 * precios["output_per_million"]
+    )
+
+    confianza = float(resultado["confidence"])
+    if 0 <= confianza <= 1:
+        confianza *= 100
+
+    return {
+        "Título detectado": str(resultado["detected_title"]).strip(),
+        "Función formal": str(resultado["formal_function"]).strip(),
+        "Acto documentado": str(resultado["documented_act"]).strip(),
+        "Confianza identidad (%)": round(confianza, 2),
+        "Evidencia identidad": str(resultado["evidence"]).strip(),
+        "Costo identidad (USD)": costo,
+        "Tiempo identidad (s)": duracion,
+        "Modelo identidad": str(respuesta.get("model") or modelo),
+    }
+
+
+def resolver_catalogo_desde_identidad_multimodal(
+    documento_alias: str,
+    pdf_bytes: bytes,
+    catalogo: pd.DataFrame,
+    modelo: str,
+    identidad_detectada: str,
+    funcion_formal: str,
+    acto_documentado: str,
+    codigo_unidad: str,
+) -> dict:
+    """
+    Resuelve la relación con el catálogo sin volver a definir la identidad.
+
+    Para el código de la unidad permite marcar candidato_unidad; para cualquier
+    otro código exige equivalencia documental y funcional antes de continuar.
+    """
+    if modelo not in MODELOS:
+        raise OpenAIMultimodalError(f"Modelo no admitido: {modelo}")
+
+    opciones, mapa = _crear_opciones(catalogo)
+    enum_opciones = list(mapa.keys())
+
+    prompt = (
+        "La identidad documental de este archivo YA fue establecida en una "
+        "etapa previa sin catálogo. No la cambies, no la reinterpretres para "
+        "hacerla coincidir y no inventes otra identidad.\n\n"
+        f"Identidad fija: {identidad_detectada}\n"
+        f"Función formal fija: {funcion_formal}\n"
+        f"Acto documentado fijo: {acto_documentado}\n\n"
+        "Ahora compara esa identidad fija contra las opciones del catálogo. "
+        "Puedes revisar el PDF únicamente para verificar la correspondencia, "
+        "pero no para redefinir qué documento es.\n\n"
+        "Devuelve una opción y una relación:\n"
+        "- equivalente: ES el mismo tipo documental y cumple la misma función "
+        "formal que el concepto elegido.\n"
+        "- candidato_unidad: úsalo solamente cuando el concepto elegido sea el "
+        "de la estimación/unidad actualmente analizada y el archivo pueda ser "
+        "su representante o componente; la comparación conjunta decidirá su "
+        "papel después.\n"
+        "- no_equivalente: hay una opción temática cercana, pero la identidad o "
+        "función formal es distinta.\n"
+        "- indeterminado: no hay evidencia suficiente para decidir.\n\n"
+        "Reglas críticas:\n"
+        "1. Si ninguna opción describe realmente la identidad fija, selecciona "
+        "fuera_catalogo.\n"
+        "2. Un recibo, factura, oficio, invitación, control, croquis o soporte "
+        "no se convierte en el documento principal solo porque lo mencione.\n"
+        "3. Una entrega física o constatación material no es automáticamente "
+        "un acta administrativa de entrega-recepción.\n"
+        "4. Diferentes finalidades presupuestales o diferentes garantías no "
+        "son equivalentes solo por compartir estructura o palabras.\n"
+        "5. Para códigos distintos al de la unidad, solo usa equivalente si "
+        "identidad, finalidad, acto acreditado y efecto documental coinciden.\n"
+        f"6. El código de la unidad actual es {codigo_unidad}; solo para el "
+        "concepto asociado a ese código puede usarse candidato_unidad.\n\n"
+        "Opciones permitidas:\n"
+        + "\n".join(opciones)
+    )
+
+    schema = {
+        "type": "object",
+        "properties": {
+            "option": {
+                "type": "string",
+                "enum": enum_opciones,
+            },
+            "relation": {
+                "type": "string",
+                "enum": [
+                    "equivalente",
+                    "candidato_unidad",
+                    "no_equivalente",
+                    "indeterminado",
+                ],
+            },
+            "confidence": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 100,
+            },
+            "evidence": {"type": "string"},
+        },
+        "required": [
+            "option",
+            "relation",
+            "confidence",
+            "evidence",
+        ],
+        "additionalProperties": False,
+    }
+
+    encoded = base64.b64encode(pdf_bytes).decode("ascii")
+    payload = {
+        "model": modelo,
+        "reasoning": {"effort": "low"},
+        "input": [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "input_file",
+                        "filename": f"{documento_alias}.pdf",
+                        "file_data": (
+                            "data:application/pdf;base64," + encoded
+                        ),
+                        "detail": "high",
+                    },
+                    {"type": "input_text", "text": prompt},
+                ],
+            }
+        ],
+        "text": {
+            "format": {
+                "type": "json_schema",
+                "name": "catalog_resolution_from_fixed_identity",
+                "strict": True,
+                "schema": schema,
+            }
+        },
+        "max_output_tokens": 500,
+    }
+
+    inicio = time.perf_counter()
+    respuesta = _request_json(
+        "POST",
+        "/responses",
+        payload,
+        timeout=240,
+    )
+    duracion = time.perf_counter() - inicio
+
+    try:
+        resultado = json.loads(_extraer_output_text(respuesta))
+    except json.JSONDecodeError as error:
+        raise OpenAIMultimodalError(
+            "OpenAI devolvió una resolución de catálogo inválida."
+        ) from error
+
+    opcion = str(resultado["option"])
+    relacion = str(resultado["relation"])
+    if opcion not in mapa:
+        raise OpenAIMultimodalError(
+            "OpenAI devolvió una opción fuera del catálogo permitido."
+        )
+
+    concepto = mapa[opcion]["concepto"]
+    codigo = mapa[opcion]["codigo"]
+
+    if opcion == "fuera_catalogo":
+        relacion = "no_equivalente"
+        codigo = ""
+    elif relacion == "candidato_unidad":
+        codigo_normalizado = str(codigo).strip()
+        if codigo_normalizado.lower().endswith(".pdf"):
+            codigo_normalizado = codigo_normalizado[:-4]
+        if codigo_normalizado.upper() != str(codigo_unidad).upper():
+            raise OpenAIMultimodalError(
+                "Se marcó candidato_unidad para un código distinto a la unidad."
+            )
+
+    usage = respuesta.get("usage") or {}
+    input_tokens = int(usage.get("input_tokens") or 0)
+    output_tokens = int(usage.get("output_tokens") or 0)
+    precios = MODELOS[modelo]
+    costo = (
+        input_tokens / 1_000_000 * precios["input_per_million"]
+        + output_tokens / 1_000_000 * precios["output_per_million"]
+    )
+
+    confianza = float(resultado["confidence"])
+    if 0 <= confianza <= 1:
+        confianza *= 100
+
+    return {
+        "Resultado catálogo": concepto,
+        "Código candidato": codigo,
+        "Relación catálogo": relacion,
+        "Confianza resolución (%)": round(confianza, 2),
+        "Evidencia resolución": str(resultado["evidence"]).strip(),
+        "Costo resolución (USD)": costo,
+        "Tiempo resolución (s)": duracion,
+        "Modelo resolución": str(respuesta.get("model") or modelo),
+    }
+
+
 def clasificar_pdf_multimodal(
     documento_alias: str,
     pdf_bytes: bytes,
