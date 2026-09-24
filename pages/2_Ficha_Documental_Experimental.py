@@ -12,9 +12,12 @@ from services.openai_multimodal_service import (
 from ui.common import mostrar_encabezado, requerir_expediente
 
 
+FICHA_SCHEMA_VERSION = 2
+
+
 mostrar_encabezado(
     "Ficha documental experimental",
-    "Prueba paralela de una sola lectura multimodal rica por PDF",
+    "V2 · documentos lógicos, registros internos y relaciones en una sola lectura",
 )
 requerir_expediente()
 
@@ -35,10 +38,9 @@ st.info(
 )
 
 st.caption(
-    "Objetivo de la prueba: comprobar si una sola lectura puede identificar "
-    "documentos lógicos internos, rangos de páginas, identidad, función, acto "
-    "documentado y suficiente texto representativo para que después JEV y las "
-    "reglas trabajen sin volver a mirar el PDF."
+    "V2 distingue documentos lógicos autónomos de registros internos. También "
+    "extrae alcance y límites de identidad y relaciones entre piezas del mismo "
+    "PDF. La prueba sigue aislada del catálogo, JEV y el motor de estimaciones."
 )
 
 pdfs = inventario[
@@ -134,6 +136,8 @@ if st.button(
             (
                 archivos,
                 documentos,
+                registros,
+                relaciones,
                 marcadores,
                 resumen,
                 perfiles_crudos,
@@ -156,8 +160,11 @@ if st.button(
     st.session_state[
         "ficha_documental_experimental"
     ] = {
+        "schema_version": FICHA_SCHEMA_VERSION,
         "archivos": archivos,
         "documentos": documentos,
+        "registros": registros,
+        "relaciones": relaciones,
         "marcadores": marcadores,
         "resumen": resumen,
         "perfiles_crudos": perfiles_crudos,
@@ -172,18 +179,37 @@ guardado = st.session_state.get(
     "ficha_documental_experimental"
 )
 
-if (
+resultado_actual = (
     guardado
     and guardado.get("expediente_id", "")
     == st.session_state.get("expediente_id", "")
+)
+
+if (
+    resultado_actual
+    and guardado.get("schema_version")
+    != FICHA_SCHEMA_VERSION
+):
+    st.info(
+        "Existe un resultado de una versión experimental anterior. Se conserva "
+        "sin reutilizarlo. Ejecuta nuevamente la misma muestra para generar la "
+        "ficha V2; no se hace ningún reanálisis automático."
+    )
+
+if (
+    resultado_actual
+    and guardado.get("schema_version")
+    == FICHA_SCHEMA_VERSION
 ):
     archivos = guardado["archivos"]
     documentos = guardado["documentos"]
+    registros = guardado["registros"]
+    relaciones = guardado["relaciones"]
     marcadores = guardado["marcadores"]
     resumen = guardado["resumen"]
 
     st.divider()
-    st.subheader("Resultado de la prueba")
+    st.subheader("Resultado de la prueba V2")
 
     c1, c2, c3, c4 = st.columns(4)
     c1.metric(
@@ -199,35 +225,56 @@ if (
         resumen["documentos_logicos"],
     )
     c4.metric(
-        "PDF compuestos",
-        resumen["documentos_compuestos"],
+        "Registros internos",
+        resumen["registros_internos"],
     )
 
     c5, c6, c7, c8 = st.columns(4)
     c5.metric(
+        "Relaciones lógicas",
+        resumen["relaciones_logicas"],
+    )
+    c6.metric(
+        "PDF compuestos",
+        resumen["documentos_compuestos"],
+    )
+    c7.metric(
         "Costo total (USD)",
         f"{resumen['costo_total_usd']:.6f}",
     )
-    c6.metric(
+    c8.metric(
         "Tiempo acumulado (s)",
         f"{resumen['tiempo_total_s']:.1f}",
     )
-    c7.metric(
+
+    c9, c10, c11, c12 = st.columns(4)
+    c9.metric(
         "Tokens entrada",
         resumen["tokens_entrada"],
     )
-    c8.metric(
+    c10.metric(
         "Tokens salida",
         resumen["tokens_salida"],
+    )
+    c11.metric(
+        "Requieren OCR adicional",
+        resumen["requieren_ocr_adicional"],
+    )
+    c12.metric(
+        "Relaciones inválidas",
+        resumen["relaciones_invalidas"],
     )
 
     if (
         resumen["rangos_invalidos"] > 0
+        or resumen["registros_rango_invalido"] > 0
         or resumen["conteos_pagina_incorrectos"] > 0
+        or resumen["relaciones_invalidas"] > 0
     ):
         st.warning(
-            "La ficha contiene inconsistencias de páginas. No debe integrarse "
-            "al flujo principal hasta revisar esos casos."
+            "La ficha V2 contiene alguna inconsistencia estructural de páginas "
+            "o relaciones. No debe integrarse al flujo principal hasta revisar "
+            "esos casos."
         )
 
     st.subheader("1. Ficha física por PDF")
@@ -240,6 +287,8 @@ if (
                 "Conteo páginas coincide",
                 "Documento compuesto",
                 "Documentos lógicos detectados",
+                "Registros internos detectados",
+                "Relaciones lógicas detectadas",
                 "Calidad de lectura",
                 "Requiere OCR adicional",
                 "Resumen general",
@@ -264,7 +313,10 @@ if (
                 "Título detectado",
                 "Función formal",
                 "Acto documentado",
+                "Alcance de identidad",
+                "Límites de identidad",
                 "Alcance documental",
+                "Registros internos",
                 "Confianza (%)",
                 "Datos clave",
             ]
@@ -300,6 +352,12 @@ if (
                     f"**Acto documentado:** {fila['Acto documentado']}"
                 )
                 st.write(
+                    f"**Alcance de identidad:** {fila['Alcance de identidad']}"
+                )
+                st.write(
+                    f"**Límites de identidad:** {fila['Límites de identidad']}"
+                )
+                st.write(
                     "**Texto representativo:**"
                 )
                 st.write(
@@ -317,7 +375,69 @@ if (
                     or "Sin evidencia adicional."
                 )
 
-    st.subheader("4. Marcadores de página")
+    st.subheader("4. Registros internos")
+
+    if registros.empty:
+        st.info(
+            "No se detectaron registros internos relevantes en esta muestra."
+        )
+    else:
+        st.dataframe(
+            registros[
+                [
+                    "Archivo",
+                    "ID lógico",
+                    "ID registro",
+                    "Tipo registro",
+                    "Página inicial",
+                    "Página final",
+                    "Rango válido",
+                    "Etiqueta",
+                    "Acto documentado",
+                    "Confianza (%)",
+                    "Datos clave",
+                ]
+            ],
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                "Confianza (%)": st.column_config.NumberColumn(
+                    "Confianza (%)",
+                    format="%.1f %%",
+                )
+            },
+        )
+
+    st.subheader("5. Relaciones entre documentos lógicos")
+
+    if relaciones.empty:
+        st.info(
+            "No se detectaron relaciones entre documentos lógicos de un mismo PDF."
+        )
+    else:
+        st.dataframe(
+            relaciones[
+                [
+                    "Archivo",
+                    "Origen",
+                    "Relación",
+                    "Destino",
+                    "IDs válidos",
+                    "Confianza (%)",
+                    "Evidencia",
+                ]
+            ],
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                "Confianza (%)": st.column_config.NumberColumn(
+                    "Confianza (%)",
+                    format="%.1f %%",
+                )
+            },
+        )
+
+    st.subheader("6. Marcadores de página")
 
     if marcadores.empty:
         st.info(
@@ -339,8 +459,9 @@ if (
         )
 
     st.warning(
-        "Este resultado sigue siendo experimental. Todavía NO alimenta JEV, "
+        "Este resultado V2 sigue siendo experimental. Todavía NO alimenta JEV, "
         "el catálogo, la comparación conjunta de estimaciones ni la "
-        "codificación final. Primero compararemos estas fichas contra los "
-        "resultados que ya conocemos para detectar posibles regresiones."
+        "codificación final. La siguiente validación es repetir la misma "
+        "muestra de cinco PDFs y verificar que NOTAS DE BITÁCORA se modele como "
+        "un documento lógico con notas internas, sin degradar los otros casos."
     )
