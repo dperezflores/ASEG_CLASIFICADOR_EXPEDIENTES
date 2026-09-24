@@ -42,6 +42,11 @@ paginas = {
             icon="🧩",
         ),
         st.Page(
+            "pages/2_Ficha_Documental_Experimental.py",
+            title="Ficha documental experimental",
+            icon="🧾",
+        ),
+        st.Page(
             "pages/2_Relaciones_Globales.py",
             title="Relaciones globales",
             icon="🕸️",
