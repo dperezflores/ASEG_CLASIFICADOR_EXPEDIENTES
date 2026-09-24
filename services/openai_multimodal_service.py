@@ -691,6 +691,153 @@ def analizar_relacion_unidad_multimodal(
     }
 
 
+def validar_equivalencia_documental_multimodal(
+    documento_alias: str,
+    pdf_bytes: bytes,
+    modelo: str,
+    concepto_objetivo: str,
+    identidad_detectada: str,
+) -> dict:
+    """
+    Valida de forma independiente si la identidad/función documental del
+    archivo corresponde al concepto candidato del catálogo.
+
+    Esta etapa NO decide completitud y NO puede seleccionar otro concepto.
+    Su propósito es impedir que una similitud temática o de etapa se convierta
+    automáticamente en una equivalencia documental.
+    """
+    if modelo not in MODELOS:
+        raise OpenAIMultimodalError(f"Modelo no admitido: {modelo}")
+
+    prompt = (
+        "Evalúa exclusivamente la EQUIVALENCIA DOCUMENTAL Y FUNCIONAL entre "
+        "este archivo y un concepto candidato del catálogo de obra pública. "
+        f"La identidad detectada previamente es: {identidad_detectada}. "
+        f"El concepto candidato es: {concepto_objetivo}. "
+        "No cambies la identidad detectada, no selecciones otro concepto y no "
+        "uses el nombre del archivo ni su ruta.\n\n"
+        "IMPORTANTE: en esta etapa NO evalúes si el documento está completo. "
+        "Un extracto o algunas páginas pueden seguir perteneciendo al mismo "
+        "tipo documental y, por tanto, ser funcionalmente equivalentes; la "
+        "integridad se revisará después.\n\n"
+        "Responde:\n"
+        "- equivalente: la identidad, finalidad y función documental del "
+        "archivo corresponden al concepto candidato, aunque después pueda "
+        "resultar completo o parcial.\n"
+        "- no_equivalente: el archivo puede estar relacionado con la misma "
+        "obra, etapa o trámite, pero cumple una función documental distinta.\n"
+        "- indeterminado: la evidencia disponible no permite decidir con "
+        "seguridad razonable.\n\n"
+        "Criterios críticos:\n"
+        "1. Compartir palabras, participantes, contrato, etapa, fechas o tema "
+        "no demuestra equivalencia.\n"
+        "2. Compara la finalidad formal del documento, el acto que acredita, "
+        "sus efectos administrativos y el tipo de información que documenta.\n"
+        "3. Distingue documentos cercanos pero funcionalmente diferentes. Por "
+        "ejemplo, una constatación o entrega física no es automáticamente un "
+        "acta formal de entrega-recepción; y un presupuesto de referencia no "
+        "es automáticamente un presupuesto contratado.\n"
+        "4. Si el archivo es claramente una parte del MISMO tipo documental, "
+        "puede ser equivalente aquí; la etapa de integridad decidirá después "
+        "si es parcial_extracto.\n"
+        "5. Ante duda real entre funciones distintas, usa indeterminado en vez "
+        "de forzar una equivalencia."
+    )
+
+    schema = {
+        "type": "object",
+        "properties": {
+            "equivalence": {
+                "type": "string",
+                "enum": [
+                    "equivalente",
+                    "no_equivalente",
+                    "indeterminado",
+                ],
+            },
+            "confidence": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 100,
+            },
+            "evidence": {"type": "string"},
+        },
+        "required": ["equivalence", "confidence", "evidence"],
+        "additionalProperties": False,
+    }
+
+    encoded = base64.b64encode(pdf_bytes).decode("ascii")
+    payload = {
+        "model": modelo,
+        "reasoning": {"effort": "low"},
+        "input": [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "input_file",
+                        "filename": f"{documento_alias}.pdf",
+                        "file_data": (
+                            "data:application/pdf;base64," + encoded
+                        ),
+                        "detail": "high",
+                    },
+                    {
+                        "type": "input_text",
+                        "text": prompt,
+                    },
+                ],
+            }
+        ],
+        "text": {
+            "format": {
+                "type": "json_schema",
+                "name": "document_functional_equivalence",
+                "strict": True,
+                "schema": schema,
+            }
+        },
+        "max_output_tokens": 450,
+    }
+
+    inicio = time.perf_counter()
+    respuesta = _request_json(
+        "POST",
+        "/responses",
+        payload,
+        timeout=240,
+    )
+    duracion = time.perf_counter() - inicio
+
+    try:
+        resultado = json.loads(_extraer_output_text(respuesta))
+    except json.JSONDecodeError as error:
+        raise OpenAIMultimodalError(
+            "OpenAI devolvió una respuesta inválida al validar equivalencia."
+        ) from error
+
+    usage = respuesta.get("usage") or {}
+    input_tokens = int(usage.get("input_tokens") or 0)
+    output_tokens = int(usage.get("output_tokens") or 0)
+    precios = MODELOS[modelo]
+    costo = (
+        input_tokens / 1_000_000 * precios["input_per_million"]
+        + output_tokens / 1_000_000 * precios["output_per_million"]
+    )
+
+    confianza = float(resultado["confidence"])
+    if 0 <= confianza <= 1:
+        confianza *= 100
+
+    return {
+        "Equivalencia funcional": str(resultado["equivalence"]),
+        "Confianza equivalencia (%)": round(confianza, 2),
+        "Evidencia equivalencia": str(resultado["evidence"]).strip(),
+        "Costo equivalencia (USD)": costo,
+        "Tiempo equivalencia (s)": duracion,
+    }
+
+
 def validar_integridad_documental_multimodal(
     documento_alias: str,
     pdf_bytes: bytes,
