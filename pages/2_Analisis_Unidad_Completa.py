@@ -22,6 +22,9 @@ from services.unit_content_analysis_service import (
 from ui.common import mostrar_encabezado, requerir_expediente
 
 
+RESULTADO_UNIDAD_SCHEMA_VERSION = 2
+
+
 mostrar_encabezado(
     "Análisis de unidad completa",
     "Primera consolidación de todos los componentes de una estimación",
@@ -193,6 +196,7 @@ if st.button(
         )
 
         st.session_state["resultado_unidad_completa"] = {
+            "schema_version": RESULTADO_UNIDAD_SCHEMA_VERSION,
             "ruta_unidad": str(unidad["Ruta carpeta"]),
             "procedimiento": procedimiento,
             "consecutivo": int(unidad["Consecutivo"]),
@@ -204,7 +208,6 @@ if st.button(
 
     barra.empty()
     estado.empty()
-    st.rerun()
 
 guardado = st.session_state.get("resultado_unidad_completa")
 
@@ -213,22 +216,55 @@ if (
     and guardado.get("ruta_unidad") == str(unidad["Ruta carpeta"])
     and guardado.get("procedimiento") == procedimiento
 ):
-    detalle = guardado["detalle"]
+    detalle = guardado["detalle"].copy()
     comparacion = guardado.get("comparacion", pd.DataFrame())
     meta_comparacion = guardado.get("meta_comparacion", {})
     grupos = guardado["grupos"]
 
-    if (
-        "Clasificación inicial" not in detalle.columns
-        or "Relación comparativa" not in detalle.columns
-        or "Intentos de análisis" not in detalle.columns
-        or "Reintento aplicado" not in detalle.columns
-    ):
-        st.warning(
-            "El resultado guardado pertenece a la versión anterior del "
-            "análisis. Ejecuta nuevamente 'Analizar unidad completa'."
+    # Compatibilidad hacia atrás:
+    # una actualización de la interfaz nunca debe obligar a repetir llamadas
+    # de IA ya pagadas. Si un resultado anterior no trae columnas nuevas,
+    # se completan localmente con valores neutros y se muestra lo disponible.
+    columnas_compatibilidad = {
+        "Clasificación inicial": "",
+        "Código inicial": "",
+        "Validación secundaria": "",
+        "Alcance documental": "no_evaluado",
+        "Relación comparativa": "",
+        "Confianza comparativa (%)": 0.0,
+        "Evidencia comparativa": "",
+        "Relación con la unidad": "indeterminado",
+        "Concepto relacionado": "",
+        "Código relacionado": "",
+        "Coincide catálogo": False,
+        "Código de catálogo": "",
+        "Confianza (%)": 0.0,
+        "Relación consolidada": "",
+        "Acción provisional": "",
+        "Ruta utilizada": "",
+        "Motivo de ruta": "",
+        "Evidencia": "",
+        "Modelo": "",
+        "Páginas usadas": "",
+        "Costo (USD)": 0.0,
+        "Tiempo (s)": 0.0,
+        "Intentos de análisis": 1,
+        "Reintento aplicado": False,
+        "Error": "",
+    }
+
+    columnas_agregadas = []
+    for columna, valor in columnas_compatibilidad.items():
+        if columna not in detalle.columns:
+            detalle[columna] = valor
+            columnas_agregadas.append(columna)
+
+    if columnas_agregadas:
+        st.info(
+            "Este resultado fue generado con una versión anterior de la "
+            "interfaz. Se muestra sin repetir el análisis de IA; las columnas "
+            "nuevas que no existían se completaron localmente."
         )
-        st.stop()
 
     st.subheader("2. Resultado por componente")
 
