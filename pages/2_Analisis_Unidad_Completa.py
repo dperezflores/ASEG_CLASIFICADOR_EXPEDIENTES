@@ -22,7 +22,7 @@ from services.unit_content_analysis_service import (
 from ui.common import mostrar_encabezado, requerir_expediente
 
 
-RESULTADO_UNIDAD_SCHEMA_VERSION = 4
+RESULTADO_UNIDAD_SCHEMA_VERSION = 5
 
 
 mostrar_encabezado(
@@ -46,11 +46,11 @@ mapa = construir_mapa_estructural(inventario)
 estimaciones = obtener_estimaciones_detectadas(mapa)
 
 st.info(
-    "Se conserva el flujo validado. La identidad pura se ejecuta únicamente "
-    "como segunda opinión para códigos propios sensibles; no interviene en "
-    "los candidatos a la estimación ni en la comparación conjunta. Después "
-    "se mantiene la validación de equivalencia y, cuando corresponde, la de "
-    "integridad."
+    "Se conserva el flujo validado. Para códigos propios sensibles, la "
+    "identidad pura se compara por texto con JEV. Si JEV decide equivalente "
+    "o no_equivalente, no se repite esa decisión con multimodal; solo si JEV "
+    "queda indeterminado, no está configurado o falla, se usa multimodal como "
+    "respaldo. La comparación conjunta de la estimación no se modifica."
 )
 
 if estimaciones.empty:
@@ -236,6 +236,17 @@ if (
         "Acto identidad pura": "",
         "Confianza identidad pura (%)": 0.0,
         "Evidencia identidad pura": "",
+        "Equivalencia resuelta por": "No requerida",
+        "Equivalencia JEV": "no_evaluada",
+        "Decisión original JEV": "",
+        "Confianza JEV (%)": 0.0,
+        "Probabilidad elegida JEV (%)": 0.0,
+        "Margen JEV (%)": None,
+        "Control JEV": "",
+        "Fallback multimodal JEV": "No",
+        "Error JEV": "",
+        "Llamadas multimodales documento": 0,
+        "Llamadas JEV documento": 0,
         "Equivalencia funcional": "no_evaluada",
         "Confianza equivalencia (%)": 0.0,
         "Evidencia equivalencia": "",
@@ -312,8 +323,13 @@ if (
                 "Código inicial",
                 "Verificación identidad pura",
                 "Título identidad pura",
+                "Equivalencia resuelta por",
+                "Equivalencia JEV",
+                "Fallback multimodal JEV",
                 "Equivalencia funcional",
                 "Confianza equivalencia (%)",
+                "Llamadas multimodales documento",
+                "Llamadas JEV documento",
                 "Validación secundaria",
                 "Alcance documental",
                 "Relación comparativa",
@@ -338,6 +354,18 @@ if (
                 "Confianza identidad pura (%)",
                 format="%.1f %%",
             ),
+            "Confianza JEV (%)": st.column_config.NumberColumn(
+                "Confianza JEV (%)",
+                format="%.1f %%",
+            ),
+            "Probabilidad elegida JEV (%)": st.column_config.NumberColumn(
+                "Probabilidad elegida JEV (%)",
+                format="%.1f %%",
+            ),
+            "Margen JEV (%)": st.column_config.NumberColumn(
+                "Margen JEV (%)",
+                format="%.1f %%",
+            ),
             "Confianza equivalencia (%)": st.column_config.NumberColumn(
                 "Confianza equivalencia (%)",
                 format="%.1f %%",
@@ -351,8 +379,25 @@ if (
     reintentos = int(
         detalle["Reintento aplicado"].astype(bool).sum()
     )
+    llamadas_mm = int(
+        pd.to_numeric(
+            detalle["Llamadas multimodales documento"],
+            errors="coerce",
+        ).fillna(0).sum()
+    )
+    llamadas_jev = int(
+        pd.to_numeric(
+            detalle["Llamadas JEV documento"],
+            errors="coerce",
+        ).fillna(0).sum()
+    )
+    if meta_comparacion.get("Estado") == "Comparación ejecutada":
+        llamadas_mm += 1
+
     st.caption(
         f"Costo IA acumulado de esta ejecución: USD {costo:.6f} · "
+        f"Llamadas multimodales: {llamadas_mm} · "
+        f"Llamadas JEV: {llamadas_jev} · "
         f"Parciales/extractos detectados: {parciales} · "
         f"Archivos con reintento: {reintentos}"
     )
@@ -449,6 +494,17 @@ if (
                     "Acto identidad pura",
                     "Confianza identidad pura (%)",
                     "Evidencia identidad pura",
+                    "Equivalencia resuelta por",
+                    "Equivalencia JEV",
+                    "Decisión original JEV",
+                    "Confianza JEV (%)",
+                    "Probabilidad elegida JEV (%)",
+                    "Margen JEV (%)",
+                    "Control JEV",
+                    "Fallback multimodal JEV",
+                    "Error JEV",
+                    "Llamadas multimodales documento",
+                    "Llamadas JEV documento",
                     "Equivalencia funcional",
                     "Confianza equivalencia (%)",
                     "Evidencia equivalencia",
