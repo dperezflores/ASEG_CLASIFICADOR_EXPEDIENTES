@@ -22,7 +22,7 @@ from services.unit_content_analysis_service import (
 from ui.common import mostrar_encabezado, requerir_expediente
 
 
-RESULTADO_UNIDAD_SCHEMA_VERSION = 5
+RESULTADO_UNIDAD_SCHEMA_VERSION = 6
 
 
 mostrar_encabezado(
@@ -47,10 +47,13 @@ estimaciones = obtener_estimaciones_detectadas(mapa)
 
 st.info(
     "Se conserva el flujo validado. Para códigos propios sensibles, la "
-    "identidad pura se compara por texto con JEV. Si JEV decide equivalente "
-    "o no_equivalente, no se repite esa decisión con multimodal; solo si JEV "
-    "queda indeterminado, no está configurado o falla, se usa multimodal como "
-    "respaldo. La comparación conjunta de la estimación no se modifica."
+    "identidad pura se compara por texto con JEV y existe fallback multimodal "
+    "si hace falta. Además, si varios documentos terminan proponiendo el mismo "
+    "código propio definido como de representación única, el sistema resuelve "
+    "el conflicto sin nuevas llamadas de IA usando la confianza final: exige "
+    "al menos 90% para el mejor candidato y una ventaja mínima de 10 puntos "
+    "porcentuales. Si no se cumplen ambas condiciones, manda el conflicto a "
+    "revisión manual."
 )
 
 if estimaciones.empty:
@@ -247,6 +250,12 @@ if (
         "Error JEV": "",
         "Llamadas multimodales documento": 0,
         "Llamadas JEV documento": 0,
+        "Resolución conflicto código": "No aplica",
+        "Código en conflicto": "",
+        "Confianza conflicto (%)": 0.0,
+        "Diferencia confianza conflicto (%)": 0.0,
+        "Ganador conflicto": "",
+        "Motivo conflicto": "",
         "Equivalencia funcional": "no_evaluada",
         "Confianza equivalencia (%)": 0.0,
         "Evidencia equivalencia": "",
@@ -330,6 +339,11 @@ if (
                 "Confianza equivalencia (%)",
                 "Llamadas multimodales documento",
                 "Llamadas JEV documento",
+                "Resolución conflicto código",
+                "Código en conflicto",
+                "Confianza conflicto (%)",
+                "Diferencia confianza conflicto (%)",
+                "Ganador conflicto",
                 "Validación secundaria",
                 "Alcance documental",
                 "Relación comparativa",
@@ -369,6 +383,14 @@ if (
             "Confianza equivalencia (%)": st.column_config.NumberColumn(
                 "Confianza equivalencia (%)",
                 format="%.1f %%",
+            ),
+            "Confianza conflicto (%)": st.column_config.NumberColumn(
+                "Confianza conflicto (%)",
+                format="%.1f %%",
+            ),
+            "Diferencia confianza conflicto (%)": st.column_config.NumberColumn(
+                "Diferencia confianza conflicto (%)",
+                format="%.1f pp",
             )
         },
     )
@@ -505,6 +527,12 @@ if (
                     "Error JEV",
                     "Llamadas multimodales documento",
                     "Llamadas JEV documento",
+                    "Resolución conflicto código",
+                    "Código en conflicto",
+                    "Confianza conflicto (%)",
+                    "Diferencia confianza conflicto (%)",
+                    "Ganador conflicto",
+                    "Motivo conflicto",
                     "Equivalencia funcional",
                     "Confianza equivalencia (%)",
                     "Evidencia equivalencia",
