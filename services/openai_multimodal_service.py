@@ -135,6 +135,157 @@ def _extraer_output_text(respuesta: dict) -> str:
     return texto
 
 
+def identificar_documento_multimodal(
+    documento_alias: str,
+    pdf_bytes: bytes,
+    modelo: str,
+) -> dict:
+    """
+    Identidad documental pura para verificación selectiva.
+
+    No recibe catálogo, códigos, nombre real ni ruta. No clasifica ni asigna
+    códigos: únicamente describe qué documento es, su función formal y el acto
+    que documenta.
+    """
+    if modelo not in MODELOS:
+        raise OpenAIMultimodalError(f"Modelo no admitido: {modelo}")
+
+    if len(pdf_bytes) >= 50 * 1024 * 1024:
+        raise OpenAIMultimodalError(
+            f"{documento_alias} supera el límite de 50 MB por archivo."
+        )
+
+    prompt = (
+        "Analiza este archivo de un expediente de obra pública usando "
+        "exclusivamente su contenido visual y textual. NO tienes acceso al "
+        "catálogo institucional, NO conoces códigos y NO debes intentar "
+        "adivinarlos. No uses ni infieras información del nombre real del "
+        "archivo ni de su ruta.\n\n"
+        "Tu única tarea es establecer la IDENTIDAD DOCUMENTAL PROPIA del "
+        "archivo: qué clase de documento es, cuál es su función formal y qué "
+        "acto, hecho u operación documenta.\n\n"
+        "Reglas estrictas:\n"
+        "1. Identifica el documento por lo que ES, no por la etapa a la que "
+        "pertenece ni por otros documentos que mencione.\n"
+        "2. Un soporte no se convierte en el documento principal al que hace "
+        "referencia. Un recibo que menciona un finiquito sigue siendo un "
+        "recibo; una constancia de entrega física sigue siendo una constancia "
+        "de entrega física aunque se relacione con una entrega-recepción.\n"
+        "3. Distingue finalidades documentales cercanas: presupuesto de "
+        "referencia, propuesta, contratado o finiquitado; y distingue también "
+        "los diferentes objetos de las fianzas o garantías.\n"
+        "4. No evalúes si el documento pertenece al catálogo, no selecciones "
+        "conceptos del catálogo y no decidas ningún código.\n"
+        "5. Si la evidencia visible no permite una identificación precisa, "
+        "describe la identidad más específica que sí esté sustentada y baja "
+        "la confianza."
+    )
+
+    schema = {
+        "type": "object",
+        "properties": {
+            "detected_title": {"type": "string"},
+            "formal_function": {"type": "string"},
+            "documented_act": {"type": "string"},
+            "confidence": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 100,
+            },
+            "evidence": {"type": "string"},
+        },
+        "required": [
+            "detected_title",
+            "formal_function",
+            "documented_act",
+            "confidence",
+            "evidence",
+        ],
+        "additionalProperties": False,
+    }
+
+    encoded = base64.b64encode(pdf_bytes).decode("ascii")
+    payload = {
+        "model": modelo,
+        "reasoning": {"effort": "low"},
+        "input": [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "input_file",
+                        "filename": f"{documento_alias}.pdf",
+                        "file_data": (
+                            "data:application/pdf;base64," + encoded
+                        ),
+                        "detail": "high",
+                    },
+                    {
+                        "type": "input_text",
+                        "text": prompt,
+                    },
+                ],
+            }
+        ],
+        "text": {
+            "format": {
+                "type": "json_schema",
+                "name": "selective_pure_document_identity",
+                "strict": True,
+                "schema": schema,
+            }
+        },
+        "max_output_tokens": 500,
+    }
+
+    inicio = time.perf_counter()
+    respuesta = _request_json(
+        "POST",
+        "/responses",
+        payload,
+        timeout=240,
+    )
+    duracion = time.perf_counter() - inicio
+
+    try:
+        resultado = json.loads(_extraer_output_text(respuesta))
+    except json.JSONDecodeError as error:
+        raise OpenAIMultimodalError(
+            "OpenAI devolvió una identidad documental inválida."
+        ) from error
+
+    usage = respuesta.get("usage") or {}
+    input_tokens = int(usage.get("input_tokens") or 0)
+    output_tokens = int(usage.get("output_tokens") or 0)
+    precios = MODELOS[modelo]
+    costo = (
+        input_tokens / 1_000_000 * precios["input_per_million"]
+        + output_tokens / 1_000_000 * precios["output_per_million"]
+    )
+
+    confianza = float(resultado["confidence"])
+    if 0 <= confianza <= 1:
+        confianza *= 100
+
+    return {
+        "Título identidad pura": str(
+            resultado["detected_title"]
+        ).strip(),
+        "Función identidad pura": str(
+            resultado["formal_function"]
+        ).strip(),
+        "Acto identidad pura": str(
+            resultado["documented_act"]
+        ).strip(),
+        "Confianza identidad pura (%)": round(confianza, 2),
+        "Evidencia identidad pura": str(
+            resultado["evidence"]
+        ).strip(),
+        "Costo identidad pura (USD)": costo,
+        "Tiempo identidad pura (s)": duracion,
+    }
+
+
 def clasificar_pdf_multimodal(
     documento_alias: str,
     pdf_bytes: bytes,
