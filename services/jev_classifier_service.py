@@ -12,6 +12,8 @@ import streamlit as st
 BASE_URL = "https://api.typesafe.ai"
 MODEL = "jev-latest"
 PRECIO_USD_POR_MILLON_TOKENS = 0.042
+UMBRAL_EQUIVALENCIA_JEV = 0.85
+MARGEN_EQUIVALENCIA_JEV = 0.15
 
 
 class JevError(RuntimeError):
@@ -209,6 +211,169 @@ def clasificar_texto_con_jev(
         "Tokens salida A": output_tokens,
         "Costo A (USD)": costo,
         "Tiempo A (s)": duracion,
+    }
+
+
+
+def validar_equivalencia_identidad_con_jev(
+    documento_alias: str,
+    identidad_documental: str,
+    funcion_formal: str,
+    acto_documentado: str,
+    concepto_objetivo: str,
+) -> dict:
+    """
+    Compara texto contra texto: identidad pura vs. concepto de catálogo.
+
+    No recibe PDF, nombre real ni ruta. Si Jev no alcanza suficiente seguridad,
+    fuerza "indeterminado" para que el flujo pueda escalar al multimodal.
+    """
+    identidad_documental = str(identidad_documental).strip()
+    funcion_formal = str(funcion_formal).strip()
+    acto_documentado = str(acto_documentado).strip()
+    concepto_objetivo = str(concepto_objetivo).strip()
+
+    if not identidad_documental:
+        raise JevError(
+            f"{documento_alias} no contiene identidad documental utilizable."
+        )
+    if not concepto_objetivo:
+        raise JevError(
+            f"{documento_alias} no contiene concepto objetivo utilizable."
+        )
+
+    texto_comparacion = (
+        f"IDENTIDAD DOCUMENTAL FIJA:\n{identidad_documental}\n\n"
+        f"FUNCIÓN FORMAL:\n{funcion_formal}\n\n"
+        f"ACTO DOCUMENTADO:\n{acto_documentado}\n\n"
+        f"CONCEPTO CANDIDATO DEL CATÁLOGO:\n{concepto_objetivo}"
+    )
+
+    criterios = {
+        "equivalente": (
+            "La identidad documental fija corresponde al mismo tipo de "
+            "documento y a la misma función formal que el concepto candidato. "
+            "Coinciden sustancialmente la finalidad, el acto acreditado y el "
+            "efecto documental."
+        ),
+        "no_equivalente": (
+            "La identidad documental fija y el concepto candidato son "
+            "documentos distintos o cumplen funciones formales distintas, "
+            "aunque puedan pertenecer a la misma obra, etapa o trámite."
+        ),
+        "indeterminado": (
+            "La información textual disponible no permite decidir con "
+            "seguridad razonable si existe equivalencia documental-funcional."
+        ),
+    }
+
+    payload = {
+        "model": MODEL,
+        "state": {
+            "document_id": documento_alias,
+            "document_text": texto_comparacion,
+        },
+        "questions": {
+            "document_equivalence": {
+                "type": "choice",
+                "instructions": (
+                    "Compare ONLY the fixed documentary identity against the "
+                    "catalog candidate. Do not reinterpret the document and do "
+                    "not infer from filenames, paths, project phase, dates, "
+                    "participants or shared words. Equivalence requires the "
+                    "same documentary type and formal function. A receipt that "
+                    "mentions a final estimate is not a finiquito merely for "
+                    "that reason. A physical handover/constatation is not an "
+                    "administrative entrega-recepcion act unless the fixed "
+                    "identity itself says it formalizes that act. Different "
+                    "budget purposes and different guarantee objects are not "
+                    "equivalent. Choose indeterminado when evidence is "
+                    "insufficient rather than forcing the nearest option."
+                ),
+                "criteria": criterios,
+            }
+        },
+    }
+
+    inicio = time.perf_counter()
+    respuesta = _request_json("POST", "/v1/systemone", payload)
+    duracion = time.perf_counter() - inicio
+
+    answer = respuesta.get("answers", {}).get(
+        "document_equivalence",
+        {},
+    )
+    eleccion = str(answer.get("choice") or "").strip()
+
+    if eleccion not in criterios:
+        raise JevError(
+            "La respuesta de Jev no contiene una decisión de equivalencia válida."
+        )
+
+    probabilidades = answer.get("probabilities") or {}
+    confianza = float(answer.get("confidence") or 0.0)
+    prob_elegida = float(probabilidades.get(eleccion, 0.0) or 0.0)
+
+    ranking = sorted(
+        (
+            (str(opcion), float(probabilidad))
+            for opcion, probabilidad in probabilidades.items()
+            if str(opcion) in criterios
+        ),
+        key=lambda item: item[1],
+        reverse=True,
+    )
+
+    margen = None
+    if len(ranking) >= 2:
+        margen = ranking[0][1] - ranking[1][1]
+
+    seguridad = max(confianza, prob_elegida)
+    decision_original = eleccion
+    motivo_control = ""
+
+    if eleccion != "indeterminado":
+        if seguridad < UMBRAL_EQUIVALENCIA_JEV:
+            eleccion = "indeterminado"
+            motivo_control = (
+                "Jev no alcanzó el umbral mínimo de seguridad "
+                f"({seguridad:.3f} < {UMBRAL_EQUIVALENCIA_JEV:.2f})."
+            )
+        elif (
+            margen is not None
+            and margen < MARGEN_EQUIVALENCIA_JEV
+        ):
+            eleccion = "indeterminado"
+            motivo_control = (
+                "La diferencia entre las dos decisiones más probables fue "
+                f"insuficiente ({margen:.3f} < "
+                f"{MARGEN_EQUIVALENCIA_JEV:.2f})."
+            )
+
+    usage = respuesta.get("usage") or {}
+    input_tokens = int(usage.get("input_tokens") or 0)
+    output_tokens = int(usage.get("output_tokens") or 0)
+    costo = input_tokens / 1_000_000 * PRECIO_USD_POR_MILLON_TOKENS
+
+    return {
+        "Equivalencia JEV": eleccion,
+        "Decisión original JEV": decision_original,
+        "Confianza JEV (%)": round(confianza * 100, 2),
+        "Probabilidad elegida JEV (%)": round(
+            prob_elegida * 100,
+            2,
+        ),
+        "Margen JEV (%)": (
+            round(margen * 100, 2)
+            if margen is not None
+            else None
+        ),
+        "Control JEV": motivo_control,
+        "Modelo JEV": str(respuesta.get("model") or MODEL),
+        "Tokens entrada JEV": input_tokens,
+        "Tokens salida JEV": output_tokens,
+        "Costo JEV (USD)": costo,
+        "Tiempo JEV (s)": duracion,
     }
 
 
