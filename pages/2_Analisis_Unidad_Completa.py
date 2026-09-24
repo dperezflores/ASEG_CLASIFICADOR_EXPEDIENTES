@@ -22,7 +22,7 @@ from services.unit_content_analysis_service import (
 from ui.common import mostrar_encabezado, requerir_expediente
 
 
-RESULTADO_UNIDAD_SCHEMA_VERSION = 3
+RESULTADO_UNIDAD_SCHEMA_VERSION = 4
 
 
 mostrar_encabezado(
@@ -46,13 +46,11 @@ mapa = construir_mapa_estructural(inventario)
 estimaciones = obtener_estimaciones_detectadas(mapa)
 
 st.info(
-    "Esta versión separa identidad, equivalencia e integridad. Primero "
-    "clasifica cada PDF y obtiene un concepto candidato. Si propone un código "
-    "propio, valida de forma independiente que el documento sea documental y "
-    "funcionalmente equivalente al concepto del catálogo; solo entonces revisa "
-    "si está completo o es un extracto. Finalmente compara conjuntamente los "
-    "candidatos al código de la estimación para definir representante, "
-    "componentes y soportes."
+    "Prueba controlada de identidad pura. La primera llamada de IA NO recibe "
+    "el catálogo: solo identifica qué documento es, su función formal y el "
+    "acto que documenta. Una segunda etapa compara esa identidad ya fijada "
+    "contra el catálogo. La integridad solo se revisa cuando existe un código "
+    "propio equivalente. El flujo anterior permanece disponible como respaldo."
 )
 
 if estimaciones.empty:
@@ -230,6 +228,9 @@ if (
     # de IA ya pagadas. Si un resultado anterior no trae columnas nuevas,
     # se completan localmente con valores neutros y se muestra lo disponible.
     columnas_compatibilidad = {
+        "Función formal": "",
+        "Acto documentado": "",
+        "Confianza identidad (%)": 0.0,
         "Clasificación inicial": "",
         "Código inicial": "",
         "Equivalencia funcional": "no_evaluada",
@@ -304,6 +305,9 @@ if (
             [
                 "Archivo",
                 "Título detectado",
+                "Función formal",
+                "Acto documentado",
+                "Confianza identidad (%)",
                 "Clasificación inicial",
                 "Código inicial",
                 "Equivalencia funcional",
@@ -326,6 +330,10 @@ if (
         column_config={
             "Confianza (%)": st.column_config.NumberColumn(
                 "Confianza (%)",
+                format="%.1f %%",
+            ),
+            "Confianza identidad (%)": st.column_config.NumberColumn(
+                "Confianza identidad (%)",
                 format="%.1f %%",
             ),
             "Confianza equivalencia (%)": st.column_config.NumberColumn(
@@ -431,6 +439,10 @@ if (
                     "Archivo",
                     "Ruta utilizada",
                     "Motivo de ruta",
+                    "Título detectado",
+                    "Función formal",
+                    "Acto documentado",
+                    "Confianza identidad (%)",
                     "Clasificación inicial",
                     "Código inicial",
                     "Equivalencia funcional",
