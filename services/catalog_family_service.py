@@ -37,18 +37,19 @@ def _actualizar_numero_concepto_estimacion(
     texto = str(concepto).strip()
 
     patron = re.compile(
-        r"^(.*?\bESTIMACI[ÓO]N\s*(?:NO\.?\s*)?)(\d+)(\s*)$",
+        r"(\bESTIMACI[ÓO]N\s*(?:NO\.?\s*)?)(\d+)",
         re.IGNORECASE,
     )
-    coincidencia = patron.match(texto)
 
-    if not coincidencia:
+    if not patron.search(texto):
         return texto
 
-    return (
-        f"{coincidencia.group(1)}"
-        f"{int(consecutivo)}"
-        f"{coincidencia.group(3)}"
+    return patron.sub(
+        lambda coincidencia: (
+            f"{coincidencia.group(1)}{int(consecutivo)}"
+        ),
+        texto,
+        count=1,
     )
 
 
@@ -65,7 +66,9 @@ def construir_catalogo_operativo_estimacion(
     - EST_n toma el consecutivo de la estimación.
     - AVE_n toma el consecutivo de la estimación.
 
-    No se hace ninguna sustitución general de '_1' por otro número.
+    Si el catálogo llegara a contener varias filas de una misma familia
+    (EST_1, EST_2, ...), se colapsan en una sola opción operativa para evitar
+    duplicidades. No se hace ninguna sustitución general de '_1'.
     """
     if catalogo.empty:
         return catalogo.copy(), pd.DataFrame()
@@ -73,16 +76,23 @@ def construir_catalogo_operativo_estimacion(
     procedimiento = str(procedimiento).strip().upper()
     consecutivo = int(consecutivo)
 
-    operativo = catalogo.copy()
+    filas_operativas = []
     cambios = []
+    familias_emitidas: set[str] = set()
+    coincidencias_por_familia: dict[str, int] = {
+        familia: 0
+        for familia in FAMILIAS_CONSECUTIVAS_ESTIMACION
+    }
 
-    for indice, fila in operativo.iterrows():
+    for _, fila in catalogo.iterrows():
         codigo_original = str(fila["Código"]).strip()
         concepto_original = str(fila["Concepto"]).strip()
-
         base, extension = _separar_extension(codigo_original)
 
-        for familia, reglas in FAMILIAS_CONSECUTIVAS_ESTIMACION.items():
+        familia_detectada = None
+        numero_catalogo = None
+
+        for familia in FAMILIAS_CONSECUTIVAS_ESTIMACION:
             patron_codigo = re.compile(
                 rf"^EJE_{re.escape(procedimiento)}_"
                 rf"{re.escape(familia)}_(\d+)$",
@@ -90,40 +100,69 @@ def construir_catalogo_operativo_estimacion(
             )
             coincidencia = patron_codigo.match(base)
 
-            if not coincidencia:
-                continue
+            if coincidencia:
+                familia_detectada = familia
+                numero_catalogo = int(coincidencia.group(1))
+                coincidencias_por_familia[familia] += 1
+                break
 
-            numero_catalogo = int(coincidencia.group(1))
-            nuevo_base = re.sub(
-                r"_\d+$",
-                f"_{consecutivo}",
-                base,
-            )
-            nuevo_codigo = nuevo_base + extension
-
-            nuevo_concepto = concepto_original
-            if reglas["actualizar_concepto"]:
-                nuevo_concepto = (
-                    _actualizar_numero_concepto_estimacion(
-                        concepto_original,
-                        consecutivo,
-                    )
-                )
-
-            operativo.at[indice, "Código"] = nuevo_codigo
-            operativo.at[indice, "Concepto"] = nuevo_concepto
-
-            cambios.append(
+        if familia_detectada is None:
+            filas_operativas.append(
                 {
-                    "Familia": familia,
-                    "Número catálogo base": numero_catalogo,
-                    "Consecutivo operativo": consecutivo,
-                    "Código base": codigo_original,
-                    "Código operativo": nuevo_codigo,
-                    "Concepto base": concepto_original,
-                    "Concepto operativo": nuevo_concepto,
+                    "Código": codigo_original,
+                    "Concepto": concepto_original,
                 }
             )
-            break
+            continue
 
-    return operativo.reset_index(drop=True), pd.DataFrame(cambios)
+        if familia_detectada in familias_emitidas:
+            continue
+
+        reglas = FAMILIAS_CONSECUTIVAS_ESTIMACION[
+            familia_detectada
+        ]
+        nuevo_base = re.sub(
+            r"_\d+$",
+            f"_{consecutivo}",
+            base,
+        )
+        nuevo_codigo = nuevo_base + extension
+
+        nuevo_concepto = concepto_original
+        if reglas["actualizar_concepto"]:
+            nuevo_concepto = _actualizar_numero_concepto_estimacion(
+                concepto_original,
+                consecutivo,
+            )
+
+        filas_operativas.append(
+            {
+                "Código": nuevo_codigo,
+                "Concepto": nuevo_concepto,
+            }
+        )
+        cambios.append(
+            {
+                "Familia": familia_detectada,
+                "Número catálogo base": numero_catalogo,
+                "Consecutivo operativo": consecutivo,
+                "Código base": codigo_original,
+                "Código operativo": nuevo_codigo,
+                "Concepto base": concepto_original,
+                "Concepto operativo": nuevo_concepto,
+            }
+        )
+        familias_emitidas.add(familia_detectada)
+
+    operativo = pd.DataFrame(
+        filas_operativas,
+        columns=["Código", "Concepto"],
+    )
+
+    cambios_df = pd.DataFrame(cambios)
+    if not cambios_df.empty:
+        cambios_df["Filas de familia en catálogo"] = (
+            cambios_df["Familia"].map(coincidencias_por_familia)
+        )
+
+    return operativo.reset_index(drop=True), cambios_df
