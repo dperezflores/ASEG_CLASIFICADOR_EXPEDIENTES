@@ -221,6 +221,8 @@ if (
     if (
         "Clasificación inicial" not in detalle.columns
         or "Relación comparativa" not in detalle.columns
+        or "Intentos de análisis" not in detalle.columns
+        or "Reintento aplicado" not in detalle.columns
     ):
         st.warning(
             "El resultado guardado pertenece a la versión anterior del "
