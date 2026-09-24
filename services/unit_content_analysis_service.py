@@ -13,6 +13,7 @@ from services.evaluation_service import extraer_paginas_pdf_del_zip
 from services.openai_multimodal_service import (
     clasificar_pdf_multimodal,
     comparar_candidatos_unidad_multimodal,
+    identificar_documento_multimodal,
     validar_equivalencia_documental_multimodal,
     validar_integridad_documental_multimodal,
 )
@@ -21,6 +22,15 @@ from services.openai_multimodal_service import (
 PAGINAS_INICIALES = 2
 MAX_INTENTOS_ANALISIS = 2
 MAX_PAGINAS_INTEGRIDAD_COMPLETA = 10
+USAR_IDENTIDAD_PURA_SELECTIVA = True
+CODIGOS_IDENTIDAD_PURA_SELECTIVA = frozenset(
+    {
+        "ETR_LSI_ETR",
+        "ETR_LSI_FIN",
+        "ETR_LSI_GVO",
+        "CNT_LSI_PTC",
+    }
+)
 
 
 def diagnosticar_componente_pdf(
@@ -205,6 +215,12 @@ def analizar_componente_unidad(
     equivalencia = "no_evaluada"
     confianza_equivalencia = 0.0
     evidencia_equivalencia = ""
+    verificacion_identidad_pura = "No aplicada"
+    titulo_identidad_pura = ""
+    funcion_identidad_pura = ""
+    acto_identidad_pura = ""
+    confianza_identidad_pura = 0.0
+    evidencia_identidad_pura = ""
     relacion = "soporte"
     validacion_secundaria = "No requerida"
     evidencia_secundaria = ""
@@ -243,12 +259,70 @@ def analizar_componente_unidad(
             paginas_contexto,
         )
 
+        codigo_normalizado = _codigo_sin_extension(
+            codigo_inicial
+        ).upper()
+        identidad_para_equivalencia = titulo
+
+        if (
+            USAR_IDENTIDAD_PURA_SELECTIVA
+            and codigo_normalizado
+            in CODIGOS_IDENTIDAD_PURA_SELECTIVA
+        ):
+            identidad_pura = identificar_documento_multimodal(
+                documento_alias="verificacion_identidad",
+                pdf_bytes=pdf_contexto,
+                modelo=modelo_multimodal,
+            )
+
+            verificacion_identidad_pura = "Aplicada"
+            titulo_identidad_pura = str(
+                identidad_pura["Título identidad pura"]
+            )
+            funcion_identidad_pura = str(
+                identidad_pura["Función identidad pura"]
+            )
+            acto_identidad_pura = str(
+                identidad_pura["Acto identidad pura"]
+            )
+            confianza_identidad_pura = float(
+                identidad_pura[
+                    "Confianza identidad pura (%)"
+                ]
+            )
+            evidencia_identidad_pura = str(
+                identidad_pura[
+                    "Evidencia identidad pura"
+                ]
+            )
+
+            costo += float(
+                identidad_pura[
+                    "Costo identidad pura (USD)"
+                ]
+            )
+            tiempo += float(
+                identidad_pura[
+                    "Tiempo identidad pura (s)"
+                ]
+            )
+            confianza_final = min(
+                confianza_final,
+                confianza_identidad_pura,
+            )
+
+            identidad_para_equivalencia = (
+                f"Identidad documental: {titulo_identidad_pura}. "
+                f"Función formal: {funcion_identidad_pura}. "
+                f"Acto documentado: {acto_identidad_pura}."
+            )
+
         etapa_equivalencia = validar_equivalencia_documental_multimodal(
             documento_alias="componente_unidad",
             pdf_bytes=pdf_contexto,
             modelo=modelo_multimodal,
             concepto_objetivo=concepto_inicial,
-            identidad_detectada=titulo,
+            identidad_detectada=identidad_para_equivalencia,
         )
 
         equivalencia = str(
@@ -261,7 +335,7 @@ def analizar_componente_unidad(
             etapa_equivalencia["Evidencia equivalencia"]
         )
         confianza_final = min(
-            confianza_inicial,
+            confianza_final,
             confianza_equivalencia,
         )
         costo += float(
@@ -277,7 +351,11 @@ def analizar_componente_unidad(
                 pdf_bytes=pdf_contexto,
                 modelo=modelo_multimodal,
                 concepto_objetivo=concepto_inicial,
-                identidad_detectada=titulo,
+                identidad_detectada=(
+                    identidad_para_equivalencia
+                    if verificacion_identidad_pura == "Aplicada"
+                    else titulo
+                ),
             )
 
             alcance = str(
@@ -330,6 +408,11 @@ def analizar_componente_unidad(
             rol = "Revisión necesaria"
 
     evidencias = [f"Etapa 1: {evidencia_inicial}"]
+    if evidencia_identidad_pura:
+        evidencias.append(
+            "Identidad pura selectiva: "
+            + evidencia_identidad_pura
+        )
     if evidencia_equivalencia:
         evidencias.append(
             "Equivalencia: " + evidencia_equivalencia
@@ -355,16 +438,23 @@ def analizar_componente_unidad(
 
     return {
         "Ruta utilizada": (
-            "Multimodal: identidad + equivalencia + integridad selectiva"
+            "Multimodal: clasificación + verificación selectiva + "
+            "equivalencia + integridad"
         ),
         "Motivo de ruta": (
-            "La clasificación inicial propone una identidad y un concepto; "
-            "los códigos propios solo se aceptan después de validar de forma "
-            "independiente equivalencia documental-funcional e integridad."
+            "El flujo validado se conserva. La identidad pura solo se añade "
+            "como segunda opinión para códigos propios de riesgo y nunca "
+            "participa en los candidatos al código de la estimación."
         ),
         "Título detectado": titulo,
         "Clasificación inicial": concepto_inicial,
         "Código inicial": codigo_inicial,
+        "Verificación identidad pura": verificacion_identidad_pura,
+        "Título identidad pura": titulo_identidad_pura,
+        "Función identidad pura": funcion_identidad_pura,
+        "Acto identidad pura": acto_identidad_pura,
+        "Confianza identidad pura (%)": confianza_identidad_pura,
+        "Evidencia identidad pura": evidencia_identidad_pura,
         "Equivalencia funcional": equivalencia,
         "Confianza equivalencia (%)": confianza_equivalencia,
         "Evidencia equivalencia": evidencia_equivalencia,
@@ -451,6 +541,12 @@ def analizar_unidad_completa(
                 "Título detectado": "",
                 "Clasificación inicial": "",
                 "Código inicial": "",
+                "Verificación identidad pura": "No aplicada",
+                "Título identidad pura": "",
+                "Función identidad pura": "",
+                "Acto identidad pura": "",
+                "Confianza identidad pura (%)": 0.0,
+                "Evidencia identidad pura": "",
                 "Equivalencia funcional": "indeterminado",
                 "Confianza equivalencia (%)": 0.0,
                 "Evidencia equivalencia": "",
