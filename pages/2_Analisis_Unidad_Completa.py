@@ -22,7 +22,7 @@ from services.unit_content_analysis_service import (
 from ui.common import mostrar_encabezado, requerir_expediente
 
 
-RESULTADO_UNIDAD_SCHEMA_VERSION = 3
+RESULTADO_UNIDAD_SCHEMA_VERSION = 4
 
 
 mostrar_encabezado(
@@ -46,13 +46,11 @@ mapa = construir_mapa_estructural(inventario)
 estimaciones = obtener_estimaciones_detectadas(mapa)
 
 st.info(
-    "Esta versión separa identidad, equivalencia e integridad. Primero "
-    "clasifica cada PDF y obtiene un concepto candidato. Si propone un código "
-    "propio, valida de forma independiente que el documento sea documental y "
-    "funcionalmente equivalente al concepto del catálogo; solo entonces revisa "
-    "si está completo o es un extracto. Finalmente compara conjuntamente los "
-    "candidatos al código de la estimación para definir representante, "
-    "componentes y soportes."
+    "Se conserva el flujo validado. La identidad pura se ejecuta únicamente "
+    "como segunda opinión para códigos propios sensibles; no interviene en "
+    "los candidatos a la estimación ni en la comparación conjunta. Después "
+    "se mantiene la validación de equivalencia y, cuando corresponde, la de "
+    "integridad."
 )
 
 if estimaciones.empty:
@@ -232,6 +230,12 @@ if (
     columnas_compatibilidad = {
         "Clasificación inicial": "",
         "Código inicial": "",
+        "Verificación identidad pura": "No aplicada",
+        "Título identidad pura": "",
+        "Función identidad pura": "",
+        "Acto identidad pura": "",
+        "Confianza identidad pura (%)": 0.0,
+        "Evidencia identidad pura": "",
         "Equivalencia funcional": "no_evaluada",
         "Confianza equivalencia (%)": 0.0,
         "Evidencia equivalencia": "",
@@ -306,6 +310,8 @@ if (
                 "Título detectado",
                 "Clasificación inicial",
                 "Código inicial",
+                "Verificación identidad pura",
+                "Título identidad pura",
                 "Equivalencia funcional",
                 "Confianza equivalencia (%)",
                 "Validación secundaria",
@@ -326,6 +332,10 @@ if (
         column_config={
             "Confianza (%)": st.column_config.NumberColumn(
                 "Confianza (%)",
+                format="%.1f %%",
+            ),
+            "Confianza identidad pura (%)": st.column_config.NumberColumn(
+                "Confianza identidad pura (%)",
                 format="%.1f %%",
             ),
             "Confianza equivalencia (%)": st.column_config.NumberColumn(
@@ -433,6 +443,12 @@ if (
                     "Motivo de ruta",
                     "Clasificación inicial",
                     "Código inicial",
+                    "Verificación identidad pura",
+                    "Título identidad pura",
+                    "Función identidad pura",
+                    "Acto identidad pura",
+                    "Confianza identidad pura (%)",
+                    "Evidencia identidad pura",
                     "Equivalencia funcional",
                     "Confianza equivalencia (%)",
                     "Evidencia equivalencia",
