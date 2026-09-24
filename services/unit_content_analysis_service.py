@@ -6,6 +6,9 @@ from zipfile import ZipFile
 import fitz
 import pandas as pd
 
+from services.catalog_family_service import (
+    construir_catalogo_operativo_estimacion,
+)
 from services.evaluation_service import extraer_paginas_pdf_del_zip
 from services.openai_multimodal_service import (
     clasificar_pdf_multimodal,
@@ -132,6 +135,12 @@ def analizar_componente_unidad(
         ruta_pdf,
     )
 
+    catalogo_operativo, _ = construir_catalogo_operativo_estimacion(
+        catalogo=catalogo,
+        procedimiento=procedimiento,
+        consecutivo=int(consecutivo),
+    )
+
     paginas_iniciales = list(
         range(
             1,
@@ -152,7 +161,7 @@ def analizar_componente_unidad(
     etapa1 = clasificar_pdf_multimodal(
         documento_alias="componente_unidad",
         pdf_bytes=pdf_inicial,
-        catalogo=catalogo,
+        catalogo=catalogo_operativo,
         modelo=modelo_multimodal,
     )
 
