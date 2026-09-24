@@ -268,6 +268,8 @@ if (
                 "Coincide catálogo",
                 "Código de catálogo",
                 "Confianza (%)",
+                "Intentos de análisis",
+                "Reintento aplicado",
                 "Relación consolidada",
                 "Acción provisional",
             ]
@@ -285,9 +287,13 @@ if (
     parciales = int(
         (detalle["Alcance documental"] == "parcial_extracto").sum()
     )
+    reintentos = int(
+        detalle["Reintento aplicado"].astype(bool).sum()
+    )
     st.caption(
         f"Costo IA acumulado de esta ejecución: USD {costo:.6f} · "
-        f"Parciales/extractos detectados: {parciales}"
+        f"Parciales/extractos detectados: {parciales} · "
+        f"Archivos con reintento: {reintentos}"
     )
 
     st.subheader("3. Comparación conjunta de candidatos")
@@ -389,6 +395,8 @@ if (
                     "Páginas usadas",
                     "Costo (USD)",
                     "Tiempo (s)",
+                    "Intentos de análisis",
+                    "Reintento aplicado",
                     "Error",
                 ]
             ],
