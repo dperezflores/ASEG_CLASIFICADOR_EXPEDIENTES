@@ -292,19 +292,17 @@ def generar_ficha_documental_multimodal(
     modelo: str,
 ) -> dict:
     """
-    Primera lectura documental rica y reutilizable.
+    Ficha documental canónica V2.
 
-    Esta función NO recibe catálogo, código, nombre real ni ruta. Su tarea es
-    observar el PDF una sola vez y producir una ficha canónica con:
-    - identidad física general;
-    - uno o varios documentos lógicos internos;
-    - rangos de páginas;
-    - función y acto documentado;
-    - texto representativo útil para comparaciones posteriores;
-    - datos clave y marcadores de página;
-    - señales de integridad y calidad de lectura.
+    Una sola lectura multimodal del PDF produce una representación reutilizable
+    que distingue:
+    - documentos lógicos autónomos;
+    - registros internos que NO deben separarse como documentos;
+    - relaciones entre documentos lógicos;
+    - alcance y límites de identidad;
+    - texto representativo y datos clave.
 
-    No decide códigos institucionales ni relaciones con otros archivos.
+    No recibe catálogo, código, nombre real ni ruta y no decide codificación.
     """
     if modelo not in MODELOS:
         raise OpenAIMultimodalError(f"Modelo no admitido: {modelo}")
@@ -319,47 +317,170 @@ def generar_ficha_documental_multimodal(
         "documental experto. NO tienes acceso al catálogo institucional, NO "
         "conoces códigos y NO debes asignar ninguno. No uses ni infieras el "
         "nombre real del archivo ni su ruta.\n\n"
-        "OBJETIVO: producir una FICHA DOCUMENTAL CANÓNICA reutilizable para "
-        "etapas posteriores. Debes describir qué contiene físicamente el PDF "
-        "y separar los documentos lógicos autónomos que existan dentro de él.\n\n"
+        "OBJETIVO: producir una FICHA DOCUMENTAL CANÓNICA V2 reutilizable por "
+        "otros motores sin volver a mirar el PDF.\n\n"
+        "DISTINCIÓN CRÍTICA:\n"
+        "A) DOCUMENTO LÓGICO: pieza documental autónoma con identidad, función "
+        "y efecto propios. Puede abarcar una o varias páginas.\n"
+        "B) REGISTRO INTERNO: asiento, nota, concepto, cláusula, partida, fila, "
+        "evento o sección que vive dentro de un documento lógico y NO debe "
+        "separarse como documento autónomo solo porque tenga número, fecha o "
+        "acto propio.\n\n"
+        "Ejemplos obligatorios de criterio:\n"
+        "- Una hoja o extracto de BITÁCORA que contiene notas 37, 38 y 39 es "
+        "UN documento lógico (extracto/hoja de bitácora). Las notas 37, 38 y "
+        "39 son REGISTROS INTERNOS, no tres documentos lógicos.\n"
+        "- Una ESTIMACIÓN con muchos conceptos sigue siendo un solo documento "
+        "lógico; los conceptos son registros internos.\n"
+        "- Una póliza con cláusulas, XML o condiciones inseparables sigue "
+        "siendo una sola póliza cuando esas piezas forman parte de la misma "
+        "garantía.\n"
+        "- Una carta de autenticidad con identidad, fecha y función propia SÍ "
+        "puede ser un documento lógico separado, pero debe relacionarse como "
+        "soporte_de o autentica_a respecto de la póliza correspondiente.\n\n"
         "INSTRUCCIONES:\n"
-        "1. Determina si el PDF contiene un solo documento lógico o varios. "
-        "Un documento lógico es una pieza documental autónoma con identidad y "
-        "función propias, aunque varias piezas estén unidas en un mismo PDF.\n"
-        "2. Para cada documento lógico, indica páginas inicial y final usando "
-        "numeración 1..N del PDF. No inventes cortes si la frontera no es "
-        "suficientemente visible; en caso de duda conserva un solo segmento y "
-        "explica la incertidumbre.\n"
+        "1. Determina si el PDF contiene uno o varios documentos lógicos. "
+        "Separa únicamente cuando exista autonomía documental real.\n"
+        "2. Para cada documento lógico, indica página inicial y final usando "
+        "numeración 1..N del PDF. No inventes fronteras. Si una misma hoja está "
+        "fotografiada o escaneada dos veces, no conviertas la repetición en "
+        "otro documento lógico; descríbelo en segmentation_uncertainty.\n"
         "3. Identifica cada documento por lo que ES, no por la etapa general "
         "del expediente ni por documentos que mencione.\n"
-        "4. Describe su función formal y el acto, hecho u operación que "
-        "documenta.\n"
-        "5. Genera representative_text como una transcripción documental "
-        "selectiva, fiel al contenido visible y útil para comparación. Conserva "
-        "nombres, números, fechas, importes, folios, contratos, números de "
-        "estimación, pólizas y frases distintivas. No inventes texto ilegible. "
-        "No es necesario transcribir todo el documento.\n"
-        "6. Extrae key_facts como datos breves y verificables visibles en el "
-        "documento. No completes datos ausentes.\n"
-        "7. Genera page_markers solamente para páginas que ayuden a distinguir "
-        "el contenido o a justificar límites de segmentos. Cada marcador debe "
-        "contener texto visible breve y distintivo. Prioriza inicio, cierre y "
-        "cambios de documento lógico.\n"
-        "8. Evalúa document_scope de cada documento lógico: completo, "
-        "parcial_extracto o indeterminado. 'Completo' significa que ESA pieza "
-        "documental parece una instancia completa de su propio tipo, no que "
-        "todo el expediente o toda la etapa estén completos.\n"
-        "9. reading_quality describe qué tan legible fue el PDF para esta "
-        "lectura. needs_additional_ocr solo debe ser true cuando la lectura "
-        "visual no permita recuperar suficiente contenido textual fiable.\n"
-        "10. NO compares este archivo con otros, NO decidas duplicados y NO "
-        "selecciones conceptos de catálogo.\n"
-        "11. Si el PDF contiene anexos que son parte inseparable del mismo "
-        "documento, no los separes solo porque cambie el formato. Separa solo "
-        "cuando exista identidad documental autónoma.\n\n"
-        "La salida debe ser suficientemente rica para que otro motor pueda "
-        "comparar documentos y consultar catálogo sin volver a mirar el PDF."
+        "4. Describe formal_function y documented_act.\n"
+        "5. Añade identity_scope: qué formaliza/acredita específicamente ESA "
+        "pieza. Añade identity_limits: qué NO establece por sí misma cuando "
+        "ese límite sea documentalmente relevante. No inventes limitaciones "
+        "que no puedan sostenerse en el propio documento.\n"
+        "6. Evalúa document_scope como completo, parcial_extracto o "
+        "indeterminado. Una selección de páginas/notas tomada de una bitácora "
+        "mayor debe ser parcial_extracto aunque las notas visibles estén "
+        "completas. La integridad se refiere al tipo documental identificado, "
+        "no a toda la etapa del expediente.\n"
+        "7. representative_text debe ser una transcripción SELECTIVA y fiel "
+        "para comparación posterior. Conserva nombres, números, fechas, "
+        "importes, folios, contratos, números de estimación/póliza y frases "
+        "distintivas. No inventes texto ilegible y no transcribas todo sin "
+        "necesidad.\n"
+        "8. key_facts contiene datos breves verificables visibles.\n"
+        "9. internal_records contiene registros internos relevantes. No "
+        "dupliques como registro lo que ya es un documento lógico. Para una "
+        "bitácora, registra cada nota visible; para una estimación puedes "
+        "registrar solo hitos relevantes, no cada concepto si no aporta a la "
+        "identidad.\n"
+        "10. page_markers contiene solo textos breves que ayuden a justificar "
+        "inicio, cierre, identidad o fronteras.\n"
+        "11. logical_relationships describe relaciones entre documentos "
+        "lógicos del MISMO PDF, por ejemplo soporte_de, autentica_a, anexo_de, "
+        "complementa_a o relacionado_con. Usa los logical_id exactos.\n"
+        "12. reading_quality indica legibilidad. needs_additional_ocr solo es "
+        "true si la lectura multimodal no recupera contenido suficiente.\n"
+        "13. NO compares con otros archivos, NO decidas duplicados globales y "
+        "NO selecciones conceptos del catálogo.\n\n"
+        "La prioridad es modelar correctamente la estructura documental, no "
+        "maximizar el número de segmentos."
     )
+
+    internal_record_schema = {
+        "type": "object",
+        "properties": {
+            "record_id": {"type": "string"},
+            "record_type": {"type": "string"},
+            "page_start": {"type": "integer", "minimum": 1},
+            "page_end": {"type": "integer", "minimum": 1},
+            "label": {"type": "string"},
+            "documented_act": {"type": "string"},
+            "representative_text": {"type": "string"},
+            "key_facts": {
+                "type": "array",
+                "items": {"type": "string"},
+            },
+            "confidence": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 100,
+            },
+        },
+        "required": [
+            "record_id",
+            "record_type",
+            "page_start",
+            "page_end",
+            "label",
+            "documented_act",
+            "representative_text",
+            "key_facts",
+            "confidence",
+        ],
+        "additionalProperties": False,
+    }
+
+    logical_document_schema = {
+        "type": "object",
+        "properties": {
+            "logical_id": {"type": "string"},
+            "page_start": {"type": "integer", "minimum": 1},
+            "page_end": {"type": "integer", "minimum": 1},
+            "detected_title": {"type": "string"},
+            "formal_function": {"type": "string"},
+            "documented_act": {"type": "string"},
+            "identity_scope": {"type": "string"},
+            "identity_limits": {"type": "string"},
+            "document_scope": {
+                "type": "string",
+                "enum": [
+                    "completo",
+                    "parcial_extracto",
+                    "indeterminado",
+                ],
+            },
+            "representative_text": {"type": "string"},
+            "key_facts": {
+                "type": "array",
+                "items": {"type": "string"},
+            },
+            "internal_records": {
+                "type": "array",
+                "items": internal_record_schema,
+            },
+            "page_markers": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "page": {"type": "integer", "minimum": 1},
+                        "text": {"type": "string"},
+                    },
+                    "required": ["page", "text"],
+                    "additionalProperties": False,
+                },
+            },
+            "confidence": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 100,
+            },
+            "evidence": {"type": "string"},
+        },
+        "required": [
+            "logical_id",
+            "page_start",
+            "page_end",
+            "detected_title",
+            "formal_function",
+            "documented_act",
+            "identity_scope",
+            "identity_limits",
+            "document_scope",
+            "representative_text",
+            "key_facts",
+            "internal_records",
+            "page_markers",
+            "confidence",
+            "evidence",
+        ],
+        "additionalProperties": False,
+    }
 
     schema = {
         "type": "object",
@@ -392,48 +513,24 @@ def generar_ficha_documental_multimodal(
             },
             "logical_documents": {
                 "type": "array",
+                "items": logical_document_schema,
+            },
+            "logical_relationships": {
+                "type": "array",
                 "items": {
                     "type": "object",
                     "properties": {
-                        "logical_id": {"type": "string"},
-                        "page_start": {
-                            "type": "integer",
-                            "minimum": 1,
-                        },
-                        "page_end": {
-                            "type": "integer",
-                            "minimum": 1,
-                        },
-                        "detected_title": {"type": "string"},
-                        "formal_function": {"type": "string"},
-                        "documented_act": {"type": "string"},
-                        "document_scope": {
+                        "source_logical_id": {"type": "string"},
+                        "target_logical_id": {"type": "string"},
+                        "relation_type": {
                             "type": "string",
                             "enum": [
-                                "completo",
-                                "parcial_extracto",
-                                "indeterminado",
+                                "soporte_de",
+                                "autentica_a",
+                                "anexo_de",
+                                "complementa_a",
+                                "relacionado_con",
                             ],
-                        },
-                        "representative_text": {"type": "string"},
-                        "key_facts": {
-                            "type": "array",
-                            "items": {"type": "string"},
-                        },
-                        "page_markers": {
-                            "type": "array",
-                            "items": {
-                                "type": "object",
-                                "properties": {
-                                    "page": {
-                                        "type": "integer",
-                                        "minimum": 1,
-                                    },
-                                    "text": {"type": "string"},
-                                },
-                                "required": ["page", "text"],
-                                "additionalProperties": False,
-                            },
                         },
                         "confidence": {
                             "type": "number",
@@ -443,16 +540,9 @@ def generar_ficha_documental_multimodal(
                         "evidence": {"type": "string"},
                     },
                     "required": [
-                        "logical_id",
-                        "page_start",
-                        "page_end",
-                        "detected_title",
-                        "formal_function",
-                        "documented_act",
-                        "document_scope",
-                        "representative_text",
-                        "key_facts",
-                        "page_markers",
+                        "source_logical_id",
+                        "target_logical_id",
+                        "relation_type",
                         "confidence",
                         "evidence",
                     ],
@@ -463,6 +553,7 @@ def generar_ficha_documental_multimodal(
         "required": [
             "physical_document",
             "logical_documents",
+            "logical_relationships",
         ],
         "additionalProperties": False,
     }
@@ -493,12 +584,12 @@ def generar_ficha_documental_multimodal(
         "text": {
             "format": {
                 "type": "json_schema",
-                "name": "canonical_document_profile",
+                "name": "canonical_document_profile_v2",
                 "strict": True,
                 "schema": schema,
             }
         },
-        "max_output_tokens": 5000,
+        "max_output_tokens": 6000,
     }
 
     inicio = time.perf_counter()
@@ -514,7 +605,7 @@ def generar_ficha_documental_multimodal(
         resultado = json.loads(_extraer_output_text(respuesta))
     except json.JSONDecodeError as error:
         raise OpenAIMultimodalError(
-            "OpenAI devolvió una ficha documental inválida."
+            "OpenAI devolvió una ficha documental V2 inválida."
         ) from error
 
     usage = respuesta.get("usage") or {}
@@ -529,6 +620,7 @@ def generar_ficha_documental_multimodal(
     return {
         "physical_document": resultado["physical_document"],
         "logical_documents": resultado["logical_documents"],
+        "logical_relationships": resultado["logical_relationships"],
         "model": str(respuesta.get("model") or modelo),
         "input_tokens": input_tokens,
         "output_tokens": output_tokens,
