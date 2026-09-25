@@ -38,6 +38,7 @@ CLAVES_EXPEDIENTE = (
     "resultado_unidad_completa",
     "ficha_documental_experimental",
     "ficha_v2_jev_experimental",
+    "est_completa_ficha_v2_experimental",
     "relaciones_globales_exactas",
     "relaciones_globales_similitud_pdf",
 )
