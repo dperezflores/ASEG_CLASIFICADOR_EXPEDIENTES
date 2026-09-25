@@ -112,6 +112,36 @@ def _buscar_hijo(
     return archivos[0] if archivos else None
 
 
+def _obtener_o_crear_subcarpeta(
+    servicio,
+    parent_id: str,
+    nombre: str,
+    aseg_type: str,
+) -> str:
+    existente = _buscar_hijo(
+        servicio,
+        parent_id,
+        nombre,
+        FOLDER_MIME,
+    )
+    if existente:
+        return existente["id"]
+
+    metadata = {
+        "name": nombre,
+        "mimeType": FOLDER_MIME,
+        "parents": [parent_id],
+        "appProperties": {
+            "aseg_type": aseg_type,
+        },
+    }
+    creada = servicio.files().create(
+        body=metadata,
+        fields="id",
+    ).execute()
+    return creada["id"]
+
+
 def _obtener_o_crear_root(servicio) -> str:
     nombre = _root_folder_name()
 
@@ -731,4 +761,66 @@ def actualizar_procedimiento_expediente(
         raise DrivePersistenceError(
             "No fue posible actualizar el procedimiento del expediente: "
             f"{error}"
+        ) from error
+
+
+def cargar_ficha_v2_cache(
+    folder_id: str,
+    cache_key: str,
+) -> dict | None:
+    """
+    Recupera una Ficha V2 persistida para este expediente.
+
+    El cache_key ya incorpora SHA-256 del PDF, versión de esquema, versión de
+    prompt y modelo, por lo que una ficha incompatible no puede reutilizarse
+    accidentalmente.
+    """
+    try:
+        servicio = _servicio_drive()
+        cache_folder_id = _obtener_o_crear_subcarpeta(
+            servicio,
+            folder_id,
+            "fichas_v2_cache",
+            "fichas_v2_cache",
+        )
+        raw = _leer_archivo_por_nombre(
+            servicio,
+            cache_folder_id,
+            f"{cache_key}.json",
+        )
+        if not raw:
+            return None
+        return json.loads(raw.decode("utf-8"))
+    except Exception as error:
+        raise DrivePersistenceError(
+            f"No fue posible leer el cache de Ficha V2: {error}"
+        ) from error
+
+
+def guardar_ficha_v2_cache(
+    folder_id: str,
+    cache_key: str,
+    payload: dict,
+) -> None:
+    """
+    Persiste una Ficha V2 individual en Drive dentro del expediente activo.
+    """
+    try:
+        servicio = _servicio_drive()
+        cache_folder_id = _obtener_o_crear_subcarpeta(
+            servicio,
+            folder_id,
+            "fichas_v2_cache",
+            "fichas_v2_cache",
+        )
+        _subir_o_actualizar(
+            servicio,
+            cache_folder_id,
+            f"{cache_key}.json",
+            _json_bytes(payload),
+            "application/json",
+        )
+    except Exception as error:
+        raise DrivePersistenceError(
+            f"No fue posible guardar el cache de Ficha V2: {error}"
         ) from error
