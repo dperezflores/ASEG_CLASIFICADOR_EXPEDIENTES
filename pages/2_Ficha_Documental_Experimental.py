@@ -18,6 +18,7 @@ from ui.common import mostrar_encabezado, requerir_expediente
 
 
 FICHA_SCHEMA_VERSION = 2
+JEV_RESULT_SCHEMA_VERSION = 2
 
 
 mostrar_encabezado(
@@ -476,13 +477,21 @@ if (
     )
 
     st.divider()
-    st.subheader("7. Prueba JEV sobre la Ficha V2")
+    st.subheader("7. JEV en dos etapas sobre la Ficha V2")
 
     st.info(
-        "Esta prueba reutiliza exclusivamente identidad, función, acto, alcance, "
-        "límites, texto representativo, datos clave, registros internos y "
-        "relaciones ya extraídos en la Ficha V2. No vuelve a abrir el PDF con "
-        "OpenAI y no genera ninguna llamada multimodal adicional."
+        "La Ficha V2 se reutiliza sin reenviar los PDFs a OpenAI. Primero JEV "
+        "propone un concepto candidato entre el catálogo. Después Python aplica "
+        "reglas determinísticas y solo los códigos propios que aún lo requieren "
+        "pasan a una segunda llamada JEV de equivalencia estricta contra UN "
+        "solo concepto candidato."
+    )
+
+    st.caption(
+        f"Etapa 1: {len(documentos)} llamada(s) JEV, una por documento lógico. "
+        "Etapa 2: llamadas JEV selectivas únicamente para códigos propios que "
+        "no sean extractos, candidatos EST_n ni piezas subordinadas por una "
+        "relación interna. Multimodales adicionales: 0."
     )
 
     if not jev_configurado():
@@ -491,15 +500,8 @@ if (
             "permanece disponible, pero no puede ejecutarse esta comparación."
         )
     else:
-        st.caption(
-            f"Se realizarán {len(documentos)} llamada(s) a JEV: una por cada "
-            "documento lógico detectado. Los PDFs compuestos pueden producir "
-            "más de una llamada JEV porque cada pieza lógica se clasifica por "
-            "separado. Multimodales adicionales: 0."
-        )
-
         if st.button(
-            "Clasificar Ficha V2 con JEV",
+            "Clasificar y validar Ficha V2 con JEV",
             type="primary",
         ):
             barra_jev = st.progress(0.0)
@@ -511,18 +513,19 @@ if (
                 archivo,
                 logical_id,
             ):
-                barra_jev.progress(
+                progreso = (
                     min(max(posicion / total, 0.0), 1.0)
                     if total
                     else 1.0
                 )
+                barra_jev.progress(progreso)
                 estado_jev.write(
                     f"JEV {posicion}/{total}: "
                     f"{archivo} · {logical_id}"
                 )
 
             with st.spinner(
-                "Clasificando documentos lógicos con JEV sin reenviar PDFs..."
+                "Clasificando la ficha y validando candidatos sin reenviar PDFs..."
             ):
                 try:
                     catalogo_base = cargar_catalogo(
@@ -553,6 +556,7 @@ if (
                 "ficha_v2_jev_experimental"
             ] = {
                 "schema_version": FICHA_SCHEMA_VERSION,
+                "jev_schema_version": JEV_RESULT_SCHEMA_VERSION,
                 "expediente_id": st.session_state.get(
                     "expediente_id",
                     "",
@@ -565,7 +569,7 @@ if (
             "ficha_v2_jev_experimental"
         )
 
-        if (
+        jev_mismo_expediente = (
             jev_guardado
             and jev_guardado.get("schema_version")
             == FICHA_SCHEMA_VERSION
@@ -574,11 +578,34 @@ if (
                 "expediente_id",
                 "",
             )
+        )
+
+        if (
+            jev_mismo_expediente
+            and jev_guardado.get(
+                "jev_schema_version"
+            )
+            != JEV_RESULT_SCHEMA_VERSION
+        ):
+            st.info(
+                "El resultado JEV visible corresponde a la prueba anterior. "
+                "La Ficha V2 se conserva: solo vuelve a pulsar el botón JEV. "
+                "No es necesario repetir las llamadas multimodales."
+            )
+
+        if (
+            jev_mismo_expediente
+            and jev_guardado.get(
+                "jev_schema_version"
+            )
+            == JEV_RESULT_SCHEMA_VERSION
         ):
             detalle_jev = jev_guardado["detalle"]
             resumen_jev = jev_guardado["resumen"]
 
-            st.subheader("Resultado JEV reutilizando la ficha")
+            st.subheader(
+                "Resultado JEV: candidato + equivalencia estricta"
+            )
 
             j1, j2, j3, j4 = st.columns(4)
             j1.metric(
@@ -588,50 +615,79 @@ if (
                 ],
             )
             j2.metric(
-                "Llamadas JEV",
-                resumen_jev["llamadas_jev"],
+                "JEV clasificación",
+                resumen_jev[
+                    "llamadas_jev_clasificacion"
+                ],
             )
             j3.metric(
+                "JEV validación",
+                resumen_jev[
+                    "llamadas_jev_validacion"
+                ],
+            )
+            j4.metric(
                 "Multimodales adicionales",
                 resumen_jev[
                     "multimodales_adicionales"
                 ],
             )
-            j4.metric(
-                "Costo JEV (USD)",
-                f"{resumen_jev['costo_total_jev_usd']:.6f}",
-            )
 
             j5, j6, j7, j8 = st.columns(4)
             j5.metric(
+                "JEV totales",
+                resumen_jev["llamadas_jev"],
+            )
+            j6.metric(
+                "Costo JEV total (USD)",
+                f"{resumen_jev['costo_total_jev_usd']:.6f}",
+            )
+            j7.metric(
                 "Candidatos unidad",
                 resumen_jev["candidatos_unidad"],
             )
-            j6.metric(
-                "Códigos propios",
-                resumen_jev[
-                    "codigos_propios_candidatos"
-                ],
-            )
-            j7.metric(
+            j8.metric(
                 "Extractos sin código",
                 resumen_jev[
                     "extractos_sin_codigo"
                 ],
             )
-            j8.metric(
-                "Fuera catálogo",
-                resumen_jev["fuera_catalogo"],
+
+            j9, j10, j11, j12 = st.columns(4)
+            j9.metric(
+                "Códigos propios validados",
+                resumen_jev[
+                    "codigos_propios_validados"
+                ],
+            )
+            j10.metric(
+                "Soportes por relación",
+                resumen_jev[
+                    "soportes_relacion_interna"
+                ],
+            )
+            j11.metric(
+                "Candidatos rechazados",
+                resumen_jev[
+                    "candidatos_rechazados"
+                ],
+            )
+            j12.metric(
+                "Revisión",
+                resumen_jev["revision"],
             )
 
             st.caption(
-                f"Tiempo JEV acumulado: "
+                f"Tiempo JEV total: "
                 f"{resumen_jev['tiempo_total_jev_s']:.2f} s · "
-                f"Tokens entrada: "
+                f"Clasificación: "
+                f"{resumen_jev['tiempo_jev_clasificacion_s']:.2f} s · "
+                f"Validación: "
+                f"{resumen_jev['tiempo_jev_validacion_s']:.2f} s · "
+                f"Tokens entrada totales: "
                 f"{resumen_jev['tokens_entrada_jev']} · "
-                f"Tokens salida: "
-                f"{resumen_jev['tokens_salida_jev']} · "
-                f"Revisión: {resumen_jev['revision']}"
+                f"Tokens salida totales: "
+                f"{resumen_jev['tokens_salida_jev']}"
             )
 
             st.dataframe(
@@ -646,7 +702,9 @@ if (
                         "Concepto JEV",
                         "Código JEV",
                         "Confianza JEV (%)",
-                        "Probabilidad elegida JEV (%)",
+                        "Regla relación interna",
+                        "Validación estricta JEV",
+                        "Confianza estricta JEV (%)",
                         "Decisión provisional",
                         "Código provisional",
                         "Motivo",
@@ -661,9 +719,9 @@ if (
                             format="%.1f %%",
                         )
                     ),
-                    "Probabilidad elegida JEV (%)": (
+                    "Confianza estricta JEV (%)": (
                         st.column_config.NumberColumn(
-                            "Probabilidad elegida JEV (%)",
+                            "Confianza estricta JEV (%)",
                             format="%.1f %%",
                         )
                     ),
@@ -671,7 +729,7 @@ if (
             )
 
             with st.expander(
-                "Ver Top 3, texto enviado a JEV y consumo por documento"
+                "Ver detalle de clasificación, validación y consumo JEV"
             ):
                 st.dataframe(
                     detalle_jev[
@@ -679,11 +737,21 @@ if (
                             "Archivo",
                             "ID lógico",
                             "Top 3 JEV",
+                            "Probabilidad elegida JEV (%)",
+                            "Decisión original estricta JEV",
+                            "Probabilidad estricta JEV (%)",
+                            "Margen estricta JEV (%)",
+                            "Control estricta JEV",
+                            "Error validación estricta",
                             "Texto enviado a JEV",
-                            "Tokens entrada JEV",
-                            "Tokens salida JEV",
-                            "Costo JEV (USD)",
-                            "Tiempo JEV (s)",
+                            "Tokens entrada JEV clasificación",
+                            "Tokens salida JEV clasificación",
+                            "Costo JEV clasificación (USD)",
+                            "Tiempo JEV clasificación (s)",
+                            "Tokens entrada JEV validación",
+                            "Tokens salida JEV validación",
+                            "Costo JEV validación (USD)",
+                            "Tiempo JEV validación (s)",
                         ]
                     ],
                     use_container_width=True,
@@ -691,9 +759,10 @@ if (
                 )
 
             st.warning(
-                "Los códigos mostrados siguen siendo PROVISIONALES. Para EST_n "
-                "no se elige representante aquí: CARÁTULA/ESTIMACIÓN deben pasar "
-                "después por la comparación conjunta ya validada. Los extractos "
-                "se bloquean determinísticamente y no reciben el código del "
-                "documento completo."
+                "Los resultados siguen siendo experimentales. Para EST_n no se "
+                "elige representante aquí: CARÁTULA/ESTIMACIÓN continúan hacia "
+                "la comparación conjunta validada. Una pieza autentica_a o "
+                "soporte_de no hereda el mismo código del documento principal. "
+                "Los demás códigos propios solo se conservan cuando la segunda "
+                "comparación JEV confirma equivalencia."
             )
