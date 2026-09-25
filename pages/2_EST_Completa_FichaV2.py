@@ -12,7 +12,7 @@ from services.openai_multimodal_service import (
 from ui.common import mostrar_encabezado, requerir_expediente
 
 
-RESULTADO_EST_V2_SCHEMA_VERSION = 1
+RESULTADO_EST_V2_SCHEMA_VERSION = 2
 
 
 mostrar_encabezado(
@@ -192,6 +192,8 @@ if (
     finales = resultado["resultados_finales"]
     comparacion = resultado["detalle_comparacion"]
     grupos = resultado["resumen_grupos"]
+    decisiones_fisicas = resultado["decisiones_fisicas"]
+    resumen_fisico = resultado["resumen_fisico"]
     archivos_ficha = resultado["archivos_ficha"]
     detalle_jev = resultado["detalle_jev"]
     meta_comparacion = resultado["meta_comparacion"]
@@ -221,6 +223,24 @@ if (
     c4.metric(
         "Documentos lógicos",
         resumen["documentos_logicos"],
+    )
+
+    cf1, cf2, cf3, cf4 = st.columns(4)
+    cf1.metric(
+        "Archivos físicos consolidados",
+        resumen_fisico["archivos_fisicos"],
+    )
+    cf2.metric(
+        "Salidas físicas propuestas",
+        resumen_fisico["salidas_fisicas"],
+    )
+    cf3.metric(
+        "Archivos a dividir",
+        resumen_fisico["archivos_a_dividir"],
+    )
+    cf4.metric(
+        "Revisión física",
+        resumen_fisico["archivos_revision"],
     )
 
     c5, c6, c7, c8 = st.columns(4)
@@ -256,7 +276,40 @@ if (
         f"{resumen['costo_comparacion_conjunta_usd']:.6f}"
     )
 
-    st.subheader("1. Resultado final por documento lógico")
+    st.subheader("1. Decisión final por archivo físico")
+
+    st.caption(
+        "Esta tabla vuelve a consolidar los documentos lógicos en el archivo "
+        "físico real. Un PDF con varios documentos de soporte aparece una sola "
+        "vez. Si existe un único documento principal con código, ese código "
+        "domina el archivo completo. Solo se proponen varias salidas cuando "
+        "existen códigos principales distintos y fronteras de páginas válidas."
+    )
+
+    columnas_fisicas = [
+        "Archivo original",
+        "Documentos lógicos",
+        "Códigos principales",
+        "Decisión física",
+        "Nombre de salida propuesto",
+        "Páginas de salida",
+        "Requiere división",
+        "Requiere revisión",
+        "Motivo",
+    ]
+    columnas_fisicas = [
+        columna
+        for columna in columnas_fisicas
+        if columna in decisiones_fisicas.columns
+    ]
+
+    st.dataframe(
+        decisiones_fisicas[columnas_fisicas],
+        use_container_width=True,
+        hide_index=True,
+    )
+
+    st.subheader("2. Diagnóstico por documento lógico")
 
     columnas_finales = [
         "Archivo",
@@ -295,7 +348,7 @@ if (
         },
     )
 
-    st.subheader("2. Comparación conjunta existente")
+    st.subheader("3. Comparación conjunta existente")
 
     if comparacion.empty:
         st.info(
@@ -317,7 +370,7 @@ if (
         )
     )
 
-    st.subheader("3. Grupos lógicos resultantes")
+    st.subheader("4. Grupos lógicos resultantes")
     st.dataframe(
         grupos,
         use_container_width=True,
@@ -376,7 +429,8 @@ if (
         )
 
     st.warning(
-        "Este resultado es exclusivamente experimental. El módulo actual de "
-        "Análisis unidad completa permanece intacto y sigue siendo el punto de "
-        "referencia para comparar regresiones."
+        "Este resultado es exclusivamente experimental. La consolidación "
+        "físico-lógica NO modifica ni divide archivos todavía: solo propone "
+        "la salida física. El módulo actual de Análisis unidad completa "
+        "permanece intacto y sigue siendo el punto de referencia."
     )
