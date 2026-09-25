@@ -276,9 +276,18 @@ if (
     and guardado.get("schema_version")
     == FICHA_SCHEMA_VERSION
 ):
-    archivos = guardado["archivos"]
+    archivos = guardado["archivos"].copy()
     documentos = guardado["documentos"]
     registros = guardado["registros"]
+
+    # Compatibilidad con resultados V2 generados antes de incorporar el cache.
+    if "Origen ficha" not in archivos.columns:
+        archivos["Origen ficha"] = "Resultado previo al cache"
+    if "Costo original ficha (USD)" not in archivos.columns:
+        archivos["Costo original ficha (USD)"] = pd.to_numeric(
+            archivos.get("Costo (USD)", 0.0),
+            errors="coerce",
+        ).fillna(0.0)
     relaciones = guardado["relaciones"]
     marcadores = guardado["marcadores"]
     resumen = guardado["resumen"]
