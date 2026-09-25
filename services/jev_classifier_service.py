@@ -377,6 +377,192 @@ def validar_equivalencia_identidad_con_jev(
     }
 
 
+
+def validar_equivalencia_ficha_con_jev(
+    documento_alias: str,
+    identidad_documental: str,
+    funcion_formal: str,
+    acto_documentado: str,
+    alcance_identidad: str,
+    limites_identidad: str,
+    alcance_documental: str,
+    concepto_objetivo: str,
+) -> dict:
+    """
+    Validación textual estricta de una Ficha V2 contra UN concepto candidato.
+
+    No recibe PDF, nombre real, ruta ni catálogo completo. JEV no puede elegir
+    otro concepto: únicamente decide si la identidad ya fijada por la ficha es
+    documental y funcionalmente equivalente al candidato propuesto.
+    """
+    identidad_documental = str(identidad_documental).strip()
+    concepto_objetivo = str(concepto_objetivo).strip()
+
+    if not identidad_documental:
+        raise JevError(
+            f"{documento_alias} no contiene identidad documental utilizable."
+        )
+    if not concepto_objetivo:
+        raise JevError(
+            f"{documento_alias} no contiene concepto objetivo utilizable."
+        )
+
+    texto_comparacion = (
+        f"IDENTIDAD DOCUMENTAL FIJA:\n{identidad_documental}\n\n"
+        f"FUNCIÓN FORMAL FIJA:\n{str(funcion_formal).strip()}\n\n"
+        f"ACTO DOCUMENTADO FIJO:\n{str(acto_documentado).strip()}\n\n"
+        f"ALCANCE DE IDENTIDAD FIJO:\n{str(alcance_identidad).strip()}\n\n"
+        f"LÍMITES DE IDENTIDAD FIJOS:\n{str(limites_identidad).strip()}\n\n"
+        f"ALCANCE DOCUMENTAL FIJO:\n{str(alcance_documental).strip()}\n\n"
+        f"ÚNICO CONCEPTO CANDIDATO A VALIDAR:\n{concepto_objetivo}"
+    )
+
+    criterios = {
+        "equivalente": (
+            "La identidad fija corresponde al MISMO tipo documental y a la "
+            "MISMA función formal que el concepto candidato. El alcance y los "
+            "efectos documentales son compatibles y los límites de identidad "
+            "no contradicen el concepto candidato."
+        ),
+        "no_equivalente": (
+            "La identidad fija corresponde a otro tipo documental, a una pieza "
+            "de soporte o a una función formal distinta. También aplica cuando "
+            "el concepto candidato exige un alcance o efecto documental más "
+            "amplio que la identidad fija y sus límites permiten."
+        ),
+        "indeterminado": (
+            "La ficha textual no aporta evidencia suficiente para confirmar o "
+            "rechazar equivalencia sin reinterpretar el documento."
+        ),
+    }
+
+    payload = {
+        "model": MODEL,
+        "state": {
+            "document_id": documento_alias,
+            "document_text": texto_comparacion,
+        },
+        "questions": {
+            "strict_document_equivalence": {
+                "type": "choice",
+                "instructions": (
+                    "Validate ONLY whether the FIXED documentary identity is "
+                    "truly equivalent to the ONE candidate concept. Do not "
+                    "reinterpret the identity, do not search for a nearest "
+                    "catalog option, and do not infer from filenames, paths, "
+                    "shared parties, dates, amounts or project phase. The burden "
+                    "of proof is positive: equivalente requires the same "
+                    "documentary type, formal purpose and documentary effect. "
+                    "Respect identity_limits as hard evidence against broader "
+                    "interpretations. A supporting authenticity letter is not "
+                    "the guarantee/policy it authenticates. A payment receipt "
+                    "is not a finiquito. A physical handover/receipt act is not "
+                    "automatically the formal administrative entrega-recepcion "
+                    "act: if the fixed identity is specifically 'acta de "
+                    "entrega fisica' or limits itself to material/physical "
+                    "handover, choose no_equivalente for a broader 'acta de "
+                    "entrega-recepcion' unless the fixed identity itself "
+                    "explicitly establishes that formal documentary act. "
+                    "Choose indeterminado when the fixed ficha is genuinely "
+                    "insufficient rather than stretching the candidate label."
+                ),
+                "criteria": criterios,
+            }
+        },
+    }
+
+    inicio = time.perf_counter()
+    respuesta = _request_json("POST", "/v1/systemone", payload)
+    duracion = time.perf_counter() - inicio
+
+    answer = respuesta.get("answers", {}).get(
+        "strict_document_equivalence",
+        {},
+    )
+    eleccion = str(answer.get("choice") or "").strip()
+
+    if eleccion not in criterios:
+        raise JevError(
+            "La respuesta de Jev no contiene una validación estricta válida."
+        )
+
+    probabilidades = answer.get("probabilities") or {}
+    confianza = float(answer.get("confidence") or 0.0)
+    prob_elegida = float(
+        probabilidades.get(eleccion, 0.0) or 0.0
+    )
+
+    ranking = sorted(
+        (
+            (str(opcion), float(probabilidad))
+            for opcion, probabilidad in probabilidades.items()
+            if str(opcion) in criterios
+        ),
+        key=lambda item: item[1],
+        reverse=True,
+    )
+
+    margen = None
+    if len(ranking) >= 2:
+        margen = ranking[0][1] - ranking[1][1]
+
+    seguridad = max(confianza, prob_elegida)
+    decision_original = eleccion
+    motivo_control = ""
+
+    if eleccion != "indeterminado":
+        if seguridad < UMBRAL_EQUIVALENCIA_JEV:
+            eleccion = "indeterminado"
+            motivo_control = (
+                "Jev no alcanzó el umbral mínimo de seguridad "
+                f"({seguridad:.3f} < {UMBRAL_EQUIVALENCIA_JEV:.2f})."
+            )
+        elif (
+            margen is not None
+            and margen < MARGEN_EQUIVALENCIA_JEV
+        ):
+            eleccion = "indeterminado"
+            motivo_control = (
+                "La diferencia entre las dos decisiones más probables fue "
+                f"insuficiente ({margen:.3f} < "
+                f"{MARGEN_EQUIVALENCIA_JEV:.2f})."
+            )
+
+    usage = respuesta.get("usage") or {}
+    input_tokens = int(usage.get("input_tokens") or 0)
+    output_tokens = int(usage.get("output_tokens") or 0)
+    costo = (
+        input_tokens
+        / 1_000_000
+        * PRECIO_USD_POR_MILLON_TOKENS
+    )
+
+    return {
+        "Equivalencia estricta JEV": eleccion,
+        "Decisión original estricta JEV": decision_original,
+        "Confianza estricta JEV (%)": round(
+            confianza * 100,
+            2,
+        ),
+        "Probabilidad elegida estricta JEV (%)": round(
+            prob_elegida * 100,
+            2,
+        ),
+        "Margen estricta JEV (%)": (
+            round(margen * 100, 2)
+            if margen is not None
+            else None
+        ),
+        "Control estricta JEV": motivo_control,
+        "Modelo estricta JEV": str(
+            respuesta.get("model") or MODEL
+        ),
+        "Tokens entrada estricta JEV": input_tokens,
+        "Tokens salida estricta JEV": output_tokens,
+        "Costo estricta JEV (USD)": costo,
+        "Tiempo estricta JEV (s)": duracion,
+    }
+
 def clasificar_muestra_con_jev(
     muestra: pd.DataFrame,
     catalogo: pd.DataFrame,
