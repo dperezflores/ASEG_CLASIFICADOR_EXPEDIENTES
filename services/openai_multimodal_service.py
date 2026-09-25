@@ -13,6 +13,12 @@ from services.evaluation_service import extraer_paginas_pdf_del_zip
 
 
 BASE_URL = "https://api.openai.com/v1"
+
+# Versiones explícitas para persistir/reutilizar la Ficha V2 sin mezclar
+# resultados generados por prompts o esquemas distintos.
+FICHA_DOCUMENTAL_SCHEMA_VERSION = 2
+FICHA_DOCUMENTAL_PROMPT_VERSION = "v2_20260924_internal_records_relations_limits"
+
 MODELOS = {
     "gpt-5.6-luna": {
         "input_per_million": 0.20,
