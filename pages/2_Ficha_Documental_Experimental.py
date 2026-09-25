@@ -21,6 +21,33 @@ FICHA_SCHEMA_VERSION = 2
 JEV_RESULT_SCHEMA_VERSION = 2
 
 
+def _resultado_jev_pipeline_actual(detalle, resumen) -> bool:
+    columnas_requeridas = {
+        "Validación estricta JEV",
+        "Regla relación interna",
+        "Decisión provisional",
+    }
+    claves_requeridas = {
+        "llamadas_jev_clasificacion",
+        "llamadas_jev_validacion",
+        "codigos_propios_validados",
+        "soportes_relacion_interna",
+        "candidatos_rechazados",
+    }
+
+    return (
+        isinstance(detalle, pd.DataFrame)
+        and columnas_requeridas.issubset(
+            set(detalle.columns)
+        )
+        and isinstance(resumen, dict)
+        and resumen.get("pipeline_version") == 2
+        and claves_requeridas.issubset(
+            set(resumen.keys())
+        )
+    )
+
+
 mostrar_encabezado(
     "Ficha documental experimental",
     "V2 · documentos lógicos, registros internos y relaciones en una sola lectura",
@@ -552,11 +579,22 @@ if (
             barra_jev.empty()
             estado_jev.empty()
 
+            resultado_pipeline_actual = (
+                _resultado_jev_pipeline_actual(
+                    detalle_jev,
+                    resumen_jev,
+                )
+            )
+
             st.session_state[
                 "ficha_v2_jev_experimental"
             ] = {
                 "schema_version": FICHA_SCHEMA_VERSION,
-                "jev_schema_version": JEV_RESULT_SCHEMA_VERSION,
+                "jev_schema_version": (
+                    JEV_RESULT_SCHEMA_VERSION
+                    if resultado_pipeline_actual
+                    else 1
+                ),
                 "expediente_id": st.session_state.get(
                     "expediente_id",
                     "",
@@ -564,6 +602,15 @@ if (
                 "detalle": detalle_jev,
                 "resumen": resumen_jev,
             }
+
+            if not resultado_pipeline_actual:
+                st.warning(
+                    "La ejecución terminó, pero el servidor todavía utilizó "
+                    "una versión anterior del servicio JEV. No se perdió la "
+                    "Ficha V2 ni es necesario repetir las llamadas multimodales. "
+                    "Espera a que termine el despliegue y vuelve a pulsar "
+                    "únicamente el botón JEV."
+                )
 
         jev_guardado = st.session_state.get(
             "ficha_v2_jev_experimental"
@@ -588,9 +635,12 @@ if (
             != JEV_RESULT_SCHEMA_VERSION
         ):
             st.info(
-                "El resultado JEV visible corresponde a la prueba anterior. "
-                "La Ficha V2 se conserva: solo vuelve a pulsar el botón JEV. "
-                "No es necesario repetir las llamadas multimodales."
+                "El resultado JEV guardado no corresponde al pipeline actual "
+                "de candidato + equivalencia estricta. Puede ser el resultado "
+                "anterior o una ejecución realizada mientras Streamlit todavía "
+                "estaba actualizando el servicio. La Ficha V2 se conserva: "
+                "vuelve a pulsar únicamente el botón JEV. No repitas las "
+                "llamadas multimodales."
             )
 
         if (
