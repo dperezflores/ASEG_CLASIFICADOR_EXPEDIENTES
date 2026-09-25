@@ -1,13 +1,18 @@
 import pandas as pd
 import streamlit as st
 
+from services.catalog_service import cargar_catalogo
 from services.document_profile_service import (
     MAX_DOCUMENTOS_MUESTRA,
     analizar_muestra_fichas_documentales,
 )
+from services.jev_classifier_service import jev_configurado
 from services.openai_multimodal_service import (
     MODELOS,
     openai_configurado,
+)
+from services.profile_jev_service import (
+    clasificar_fichas_v2_con_jev,
 )
 from ui.common import mostrar_encabezado, requerir_expediente
 
@@ -29,6 +34,7 @@ if not openai_configurado():
 
 inventario = st.session_state["inventario"]
 contenido_zip = st.session_state["contenido_zip"]
+procedimiento = st.session_state["procedimiento"]
 
 st.info(
     "Esta prueba NO reemplaza ni modifica el análisis de estimaciones que ya "
@@ -156,6 +162,11 @@ if st.button(
 
     barra.empty()
     estado.empty()
+
+    st.session_state.pop(
+        "ficha_v2_jev_experimental",
+        None,
+    )
 
     st.session_state[
         "ficha_documental_experimental"
@@ -459,9 +470,230 @@ if (
         )
 
     st.warning(
-        "Este resultado V2 sigue siendo experimental. Todavía NO alimenta JEV, "
-        "el catálogo, la comparación conjunta de estimaciones ni la "
-        "codificación final. La siguiente validación es repetir la misma "
-        "muestra de cinco PDFs y verificar que NOTAS DE BITÁCORA se modele como "
-        "un documento lógico con notas internas, sin degradar los otros casos."
+        "La Ficha V2 sigue siendo experimental y todavía no sustituye el flujo "
+        "principal. La prueba siguiente clasifica su TEXTO con JEV sin volver "
+        "a enviar los PDFs al modelo multimodal."
     )
+
+    st.divider()
+    st.subheader("7. Prueba JEV sobre la Ficha V2")
+
+    st.info(
+        "Esta prueba reutiliza exclusivamente identidad, función, acto, alcance, "
+        "límites, texto representativo, datos clave, registros internos y "
+        "relaciones ya extraídos en la Ficha V2. No vuelve a abrir el PDF con "
+        "OpenAI y no genera ninguna llamada multimodal adicional."
+    )
+
+    if not jev_configurado():
+        st.warning(
+            "TypeSafe/JEV no está configurado en Streamlit Secrets; la Ficha V2 "
+            "permanece disponible, pero no puede ejecutarse esta comparación."
+        )
+    else:
+        st.caption(
+            f"Se realizarán {len(documentos)} llamada(s) a JEV: una por cada "
+            "documento lógico detectado. Los PDFs compuestos pueden producir "
+            "más de una llamada JEV porque cada pieza lógica se clasifica por "
+            "separado. Multimodales adicionales: 0."
+        )
+
+        if st.button(
+            "Clasificar Ficha V2 con JEV",
+            type="primary",
+        ):
+            barra_jev = st.progress(0.0)
+            estado_jev = st.empty()
+
+            def actualizar_progreso_jev(
+                posicion,
+                total,
+                archivo,
+                logical_id,
+            ):
+                barra_jev.progress(
+                    min(max(posicion / total, 0.0), 1.0)
+                    if total
+                    else 1.0
+                )
+                estado_jev.write(
+                    f"JEV {posicion}/{total}: "
+                    f"{archivo} · {logical_id}"
+                )
+
+            with st.spinner(
+                "Clasificando documentos lógicos con JEV sin reenviar PDFs..."
+            ):
+                try:
+                    catalogo_base = cargar_catalogo(
+                        procedimiento
+                    )
+                    (
+                        detalle_jev,
+                        resumen_jev,
+                    ) = clasificar_fichas_v2_con_jev(
+                        documentos=documentos,
+                        registros=registros,
+                        relaciones=relaciones,
+                        inventario=inventario,
+                        catalogo_base=catalogo_base,
+                        procedimiento=procedimiento,
+                        on_progress=actualizar_progreso_jev,
+                    )
+                except Exception as error:
+                    barra_jev.empty()
+                    estado_jev.empty()
+                    st.error(str(error))
+                    st.stop()
+
+            barra_jev.empty()
+            estado_jev.empty()
+
+            st.session_state[
+                "ficha_v2_jev_experimental"
+            ] = {
+                "schema_version": FICHA_SCHEMA_VERSION,
+                "expediente_id": st.session_state.get(
+                    "expediente_id",
+                    "",
+                ),
+                "detalle": detalle_jev,
+                "resumen": resumen_jev,
+            }
+
+        jev_guardado = st.session_state.get(
+            "ficha_v2_jev_experimental"
+        )
+
+        if (
+            jev_guardado
+            and jev_guardado.get("schema_version")
+            == FICHA_SCHEMA_VERSION
+            and jev_guardado.get("expediente_id", "")
+            == st.session_state.get(
+                "expediente_id",
+                "",
+            )
+        ):
+            detalle_jev = jev_guardado["detalle"]
+            resumen_jev = jev_guardado["resumen"]
+
+            st.subheader("Resultado JEV reutilizando la ficha")
+
+            j1, j2, j3, j4 = st.columns(4)
+            j1.metric(
+                "Documentos lógicos",
+                resumen_jev[
+                    "documentos_logicos_evaluados"
+                ],
+            )
+            j2.metric(
+                "Llamadas JEV",
+                resumen_jev["llamadas_jev"],
+            )
+            j3.metric(
+                "Multimodales adicionales",
+                resumen_jev[
+                    "multimodales_adicionales"
+                ],
+            )
+            j4.metric(
+                "Costo JEV (USD)",
+                f"{resumen_jev['costo_total_jev_usd']:.6f}",
+            )
+
+            j5, j6, j7, j8 = st.columns(4)
+            j5.metric(
+                "Candidatos unidad",
+                resumen_jev["candidatos_unidad"],
+            )
+            j6.metric(
+                "Códigos propios",
+                resumen_jev[
+                    "codigos_propios_candidatos"
+                ],
+            )
+            j7.metric(
+                "Extractos sin código",
+                resumen_jev[
+                    "extractos_sin_codigo"
+                ],
+            )
+            j8.metric(
+                "Fuera catálogo",
+                resumen_jev["fuera_catalogo"],
+            )
+
+            st.caption(
+                f"Tiempo JEV acumulado: "
+                f"{resumen_jev['tiempo_total_jev_s']:.2f} s · "
+                f"Tokens entrada: "
+                f"{resumen_jev['tokens_entrada_jev']} · "
+                f"Tokens salida: "
+                f"{resumen_jev['tokens_salida_jev']} · "
+                f"Revisión: {resumen_jev['revision']}"
+            )
+
+            st.dataframe(
+                detalle_jev[
+                    [
+                        "Archivo",
+                        "ID lógico",
+                        "Título detectado",
+                        "Alcance documental",
+                        "Unidad estructural",
+                        "Consecutivo unidad",
+                        "Concepto JEV",
+                        "Código JEV",
+                        "Confianza JEV (%)",
+                        "Probabilidad elegida JEV (%)",
+                        "Decisión provisional",
+                        "Código provisional",
+                        "Motivo",
+                    ]
+                ],
+                use_container_width=True,
+                hide_index=True,
+                column_config={
+                    "Confianza JEV (%)": (
+                        st.column_config.NumberColumn(
+                            "Confianza JEV (%)",
+                            format="%.1f %%",
+                        )
+                    ),
+                    "Probabilidad elegida JEV (%)": (
+                        st.column_config.NumberColumn(
+                            "Probabilidad elegida JEV (%)",
+                            format="%.1f %%",
+                        )
+                    ),
+                },
+            )
+
+            with st.expander(
+                "Ver Top 3, texto enviado a JEV y consumo por documento"
+            ):
+                st.dataframe(
+                    detalle_jev[
+                        [
+                            "Archivo",
+                            "ID lógico",
+                            "Top 3 JEV",
+                            "Texto enviado a JEV",
+                            "Tokens entrada JEV",
+                            "Tokens salida JEV",
+                            "Costo JEV (USD)",
+                            "Tiempo JEV (s)",
+                        ]
+                    ],
+                    use_container_width=True,
+                    hide_index=True,
+                )
+
+            st.warning(
+                "Los códigos mostrados siguen siendo PROVISIONALES. Para EST_n "
+                "no se elige representante aquí: CARÁTULA/ESTIMACIÓN deben pasar "
+                "después por la comparación conjunta ya validada. Los extractos "
+                "se bloquean determinísticamente y no reciben el código del "
+                "documento completo."
+            )
