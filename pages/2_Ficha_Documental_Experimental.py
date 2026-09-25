@@ -117,6 +117,37 @@ modelo = st.selectbox(
     format_func=lambda clave: MODELOS[clave]["label"],
 )
 
+drive_folder_id = st.session_state.get(
+    "drive_folder_id",
+)
+cache_disponible = bool(drive_folder_id)
+
+usar_cache_ficha = st.checkbox(
+    "Reutilizar Ficha V2 compatible guardada en Drive",
+    value=True,
+    disabled=not cache_disponible,
+    help=(
+        "La reutilización exige el mismo PDF (SHA-256), versión de esquema, "
+        "versión de prompt y modelo multimodal."
+    ),
+)
+
+forzar_reanalisis_ficha = st.checkbox(
+    "Forzar nuevo análisis multimodal aunque exista cache",
+    value=False,
+    disabled=not cache_disponible,
+    help=(
+        "Úsalo solo cuando quieras volver a medir el modelo. La nueva ficha "
+        "compatible reemplaza el cache de esa combinación."
+    ),
+)
+
+if not cache_disponible:
+    st.caption(
+        "Este expediente no tiene carpeta Drive activa; la Ficha V2 funcionará "
+        "normalmente, pero no podrá persistirse entre sesiones."
+    )
+
 if rutas_seleccionadas:
     vista = pdfs[
         pdfs["Ruta original"].astype(str).isin(
@@ -137,8 +168,10 @@ if rutas_seleccionadas:
     )
 
     st.caption(
-        f"Esta ejecución realizará {len(rutas_seleccionadas)} llamada(s) "
-        "multimodal(es), una por PDF. El costo real se mostrará al terminar."
+        f"Se procesarán {len(rutas_seleccionadas)} PDF(s). Con cache activo, "
+        "solo los documentos sin una Ficha V2 compatible generarán una nueva "
+        "llamada multimodal. El número real de llamadas y el costo de esta "
+        "ejecución se mostrarán al terminar."
     )
 
 puede_ejecutar = (
@@ -181,6 +214,9 @@ if st.button(
                 rutas_pdf=rutas_seleccionadas,
                 modelo=modelo,
                 on_progress=actualizar_progreso,
+                drive_folder_id=drive_folder_id,
+                usar_cache=usar_cache_ficha,
+                forzar_reanalisis=forzar_reanalisis_ficha,
             )
         except Exception as error:
             barra.empty()
@@ -256,16 +292,29 @@ if (
         resumen["pdf_analizados"],
     )
     c2.metric(
-        "Llamadas multimodales",
+        "Llamadas multimodales nuevas",
         resumen["llamadas_multimodales"],
     )
     c3.metric(
+        "Fichas reutilizadas de cache",
+        resumen.get(
+            "fichas_cache_reutilizadas",
+            0,
+        ),
+    )
+    c4.metric(
         "Documentos lógicos",
         resumen["documentos_logicos"],
     )
-    c4.metric(
+
+    cc1, cc2 = st.columns(2)
+    cc1.metric(
         "Registros internos",
         resumen["registros_internos"],
+    )
+    cc2.metric(
+        "PDF compuestos",
+        resumen["documentos_compuestos"],
     )
 
     c5, c6, c7, c8 = st.columns(4)
@@ -274,16 +323,16 @@ if (
         resumen["relaciones_logicas"],
     )
     c6.metric(
-        "PDF compuestos",
-        resumen["documentos_compuestos"],
-    )
-    c7.metric(
-        "Costo total (USD)",
+        "Costo API de esta ejecución (USD)",
         f"{resumen['costo_total_usd']:.6f}",
     )
-    c8.metric(
-        "Tiempo acumulado (s)",
+    c7.metric(
+        "Tiempo multimodal nuevo (s)",
         f"{resumen['tiempo_total_s']:.1f}",
+    )
+    c8.metric(
+        "Cache activo",
+        "Sí" if resumen.get("cache_habilitado") else "No",
     )
 
     c9, c10, c11, c12 = st.columns(4)
@@ -303,6 +352,16 @@ if (
         "Relaciones inválidas",
         resumen["relaciones_invalidas"],
     )
+
+    advertencias_cache = resumen.get(
+        "advertencias_cache",
+        [],
+    )
+    if advertencias_cache:
+        st.warning(
+            "La Ficha V2 se generó, pero hubo incidencias de cache en Drive: "
+            + " | ".join(advertencias_cache[:3])
+        )
 
     if (
         resumen["rangos_invalidos"] > 0
@@ -332,8 +391,10 @@ if (
                 "Requiere OCR adicional",
                 "Resumen general",
                 "Incertidumbre segmentación",
+                "Origen ficha",
                 "Costo (USD)",
                 "Tiempo (s)",
+                "Costo original ficha (USD)",
             ]
         ],
         use_container_width=True,
