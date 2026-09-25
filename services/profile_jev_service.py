@@ -804,6 +804,7 @@ def clasificar_fichas_v2_con_jev(
     )
 
     resumen = {
+        "pipeline_version": 2,
         "documentos_logicos_evaluados": len(detalle),
         "llamadas_jev_clasificacion": llamadas_clasificacion,
         "llamadas_jev_validacion": llamadas_validacion,
