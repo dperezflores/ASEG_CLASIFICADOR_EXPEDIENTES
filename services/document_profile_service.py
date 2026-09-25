@@ -1,17 +1,50 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
+from hashlib import sha256
 from io import BytesIO
 from zipfile import ZipFile
 
 import fitz
 import pandas as pd
 
+from services.drive_persistence_service import (
+    DrivePersistenceError,
+    cargar_ficha_v2_cache,
+    guardar_ficha_v2_cache,
+)
 from services.openai_multimodal_service import (
+    FICHA_DOCUMENTAL_PROMPT_VERSION,
+    FICHA_DOCUMENTAL_SCHEMA_VERSION,
     generar_ficha_documental_multimodal,
 )
 
 
 MAX_DOCUMENTOS_MUESTRA = 5
+
+
+def _cache_key_ficha(
+    pdf_bytes: bytes,
+    modelo: str,
+) -> tuple[str, dict]:
+    pdf_sha256 = sha256(pdf_bytes).hexdigest()
+    material = (
+        f"{pdf_sha256}|"
+        f"schema={FICHA_DOCUMENTAL_SCHEMA_VERSION}|"
+        f"prompt={FICHA_DOCUMENTAL_PROMPT_VERSION}|"
+        f"model={modelo}"
+    )
+    cache_key = sha256(
+        material.encode("utf-8")
+    ).hexdigest()
+
+    meta = {
+        "pdf_sha256": pdf_sha256,
+        "schema_version": FICHA_DOCUMENTAL_SCHEMA_VERSION,
+        "prompt_version": FICHA_DOCUMENTAL_PROMPT_VERSION,
+        "model_requested": modelo,
+    }
+    return cache_key, meta
 
 
 def _paginas_pdf(pdf_bytes: bytes) -> int:
@@ -31,6 +64,10 @@ def analizar_muestra_fichas_documentales(
     rutas_pdf: list[str],
     modelo: str,
     on_progress=None,
+    drive_folder_id: str | None = None,
+    usar_cache: bool = True,
+    forzar_reanalisis: bool = False,
+    max_documentos: int | None = MAX_DOCUMENTOS_MUESTRA,
 ) -> tuple[
     pd.DataFrame,
     pd.DataFrame,
@@ -56,9 +93,12 @@ def analizar_muestra_fichas_documentales(
     if not rutas:
         raise ValueError("Selecciona al menos un PDF.")
 
-    if len(rutas) > MAX_DOCUMENTOS_MUESTRA:
+    if (
+        max_documentos is not None
+        and len(rutas) > int(max_documentos)
+    ):
         raise ValueError(
-            f"La prueba admite máximo {MAX_DOCUMENTOS_MUESTRA} PDFs."
+            f"La prueba admite máximo {int(max_documentos)} PDFs."
         )
 
     inventario_pdf = inventario[
@@ -90,6 +130,9 @@ def analizar_muestra_fichas_documentales(
     tokens_salida = 0
     relaciones_invalidas = 0
     registros_rango_invalido = 0
+    fichas_cache_reutilizadas = 0
+    fichas_multimodales_nuevas = 0
+    advertencias_cache = []
 
     with ZipFile(BytesIO(contenido_zip)) as archivo_zip:
         total = len(rutas)
@@ -112,11 +155,78 @@ def analizar_muestra_fichas_documentales(
                 )
 
             alias = f"documento_muestra_{posicion:02d}"
-            perfil = generar_ficha_documental_multimodal(
-                documento_alias=alias,
+            cache_key, cache_meta = _cache_key_ficha(
                 pdf_bytes=pdf_bytes,
                 modelo=modelo,
             )
+
+            perfil = None
+            origen_ficha = "Multimodal nuevo"
+
+            if (
+                usar_cache
+                and not forzar_reanalisis
+                and drive_folder_id
+            ):
+                try:
+                    cache_payload = cargar_ficha_v2_cache(
+                        folder_id=drive_folder_id,
+                        cache_key=cache_key,
+                    )
+                    if cache_payload:
+                        meta_guardada = (
+                            cache_payload.get("cache_meta")
+                            or {}
+                        )
+                        compatible = all(
+                            meta_guardada.get(clave)
+                            == valor
+                            for clave, valor
+                            in cache_meta.items()
+                        )
+                        if compatible:
+                            perfil = cache_payload.get(
+                                "profile"
+                            )
+                            if perfil:
+                                origen_ficha = "Cache Drive"
+                except DrivePersistenceError as error:
+                    advertencias_cache.append(
+                        f"{ruta}: {error}"
+                    )
+
+            if perfil is None:
+                perfil = generar_ficha_documental_multimodal(
+                    documento_alias=alias,
+                    pdf_bytes=pdf_bytes,
+                    modelo=modelo,
+                )
+                fichas_multimodales_nuevas += 1
+
+                if drive_folder_id:
+                    try:
+                        guardar_ficha_v2_cache(
+                            folder_id=drive_folder_id,
+                            cache_key=cache_key,
+                            payload={
+                                "cache_meta": {
+                                    **cache_meta,
+                                    "created_at_utc": (
+                                        datetime.now(
+                                            timezone.utc
+                                        ).isoformat()
+                                    ),
+                                },
+                                "profile": perfil,
+                            },
+                        )
+                    except DrivePersistenceError as error:
+                        advertencias_cache.append(
+                            f"{ruta}: {error}"
+                        )
+            else:
+                fichas_cache_reutilizadas += 1
+
             perfiles_crudos[ruta] = perfil
 
             fisico = perfil["physical_document"]
@@ -126,10 +236,24 @@ def analizar_muestra_fichas_documentales(
                 [],
             )
 
-            costo = float(perfil["cost_usd"])
-            duracion = float(perfil["duration_s"])
-            entrada = int(perfil["input_tokens"])
-            salida = int(perfil["output_tokens"])
+            costo_original = float(
+                perfil.get("cost_usd", 0.0)
+            )
+            duracion_original = float(
+                perfil.get("duration_s", 0.0)
+            )
+            entrada_original = int(
+                perfil.get("input_tokens", 0)
+            )
+            salida_original = int(
+                perfil.get("output_tokens", 0)
+            )
+
+            es_cache = origen_ficha == "Cache Drive"
+            costo = 0.0 if es_cache else costo_original
+            duracion = 0.0 if es_cache else duracion_original
+            entrada = 0 if es_cache else entrada_original
+            salida = 0 if es_cache else salida_original
 
             costo_total += costo
             tiempo_total += duracion
@@ -182,10 +306,22 @@ def analizar_muestra_fichas_documentales(
                         )
                     ),
                     "Modelo": str(perfil["model"]),
+                    "Origen ficha": origen_ficha,
+                    "SHA-256 PDF": cache_meta["pdf_sha256"],
+                    "Versión esquema ficha": (
+                        FICHA_DOCUMENTAL_SCHEMA_VERSION
+                    ),
+                    "Versión prompt ficha": (
+                        FICHA_DOCUMENTAL_PROMPT_VERSION
+                    ),
                     "Tokens entrada": entrada,
                     "Tokens salida": salida,
                     "Costo (USD)": costo,
                     "Tiempo (s)": duracion,
+                    "Tokens entrada original": entrada_original,
+                    "Tokens salida original": salida_original,
+                    "Costo original ficha (USD)": costo_original,
+                    "Tiempo original ficha (s)": duracion_original,
                 }
             )
 
@@ -479,7 +615,14 @@ def analizar_muestra_fichas_documentales(
 
     resumen = {
         "pdf_analizados": len(rutas),
-        "llamadas_multimodales": len(rutas),
+        "llamadas_multimodales": fichas_multimodales_nuevas,
+        "fichas_cache_reutilizadas": fichas_cache_reutilizadas,
+        "fichas_multimodales_nuevas": fichas_multimodales_nuevas,
+        "cache_habilitado": bool(
+            usar_cache and drive_folder_id
+        ),
+        "forzar_reanalisis": bool(forzar_reanalisis),
+        "advertencias_cache": advertencias_cache,
         "documentos_logicos": len(documentos),
         "registros_internos": len(registros),
         "relaciones_logicas": len(relaciones),
