@@ -18,7 +18,7 @@ from ui.common import mostrar_encabezado, requerir_expediente
 
 
 FICHA_SCHEMA_VERSION = 2
-JEV_RESULT_SCHEMA_VERSION = 5
+JEV_RESULT_SCHEMA_VERSION = 6
 
 
 def _resultado_jev_pipeline_actual(detalle, resumen) -> bool:
@@ -27,6 +27,8 @@ def _resultado_jev_pipeline_actual(detalle, resumen) -> bool:
         "Regla relación interna",
         "Validación propósito sensible",
         "Jerarquía contexto unidad aplicada",
+        "Exclusión identidad aplicada",
+        "Resolución competencia indeterminada",
         "Decisión provisional",
     }
     claves_requeridas = {
@@ -36,6 +38,8 @@ def _resultado_jev_pipeline_actual(detalle, resumen) -> bool:
         "soportes_relacion_interna",
         "propositos_sensibles_bloqueados",
         "jerarquias_unidad_aplicadas",
+        "exclusiones_identidad_aplicadas",
+        "competencias_indeterminadas_resueltas",
         "candidatos_rechazados",
     }
 
@@ -45,7 +49,7 @@ def _resultado_jev_pipeline_actual(detalle, resumen) -> bool:
             set(detalle.columns)
         )
         and isinstance(resumen, dict)
-        and resumen.get("pipeline_version") == 5
+        and resumen.get("pipeline_version") == 6
         and claves_requeridas.issubset(
             set(resumen.keys())
         )
@@ -815,6 +819,20 @@ if (
                 ],
             )
 
+            m1, m2 = st.columns(2)
+            m1.metric(
+                "Exclusiones de identidad",
+                resumen_jev[
+                    "exclusiones_identidad_aplicadas"
+                ],
+            )
+            m2.metric(
+                "Competencias resueltas",
+                resumen_jev[
+                    "competencias_indeterminadas_resueltas"
+                ],
+            )
+
             st.caption(
                 f"Tiempo JEV total: "
                 f"{resumen_jev['tiempo_total_jev_s']:.2f} s · "
@@ -842,6 +860,14 @@ if (
                         "Jerarquía contexto unidad aplicada",
                         "Regla jerarquía unidad",
                         "Evidencia jerarquía unidad",
+                        "Exclusión identidad aplicada",
+                        "Regla exclusión identidad",
+                        "Evidencia exclusión identidad",
+                        "Resolución competencia indeterminada",
+                        "Confianza competencia (%)",
+                        "Diferencia competencia (%)",
+                        "Ganador competencia",
+                        "Evidencia competencia",
                         "Concepto JEV",
                         "Código JEV",
                         "Confianza JEV (%)",
@@ -890,6 +916,14 @@ if (
                             "Jerarquía contexto unidad aplicada",
                             "Regla jerarquía unidad",
                             "Evidencia jerarquía unidad",
+                            "Exclusión identidad aplicada",
+                            "Regla exclusión identidad",
+                            "Evidencia exclusión identidad",
+                            "Resolución competencia indeterminada",
+                            "Confianza competencia (%)",
+                            "Diferencia competencia (%)",
+                            "Ganador competencia",
+                            "Evidencia competencia",
                             "Probabilidad elegida JEV (%)",
                             "Decisión original estricta JEV",
                             "Probabilidad estricta JEV (%)",
