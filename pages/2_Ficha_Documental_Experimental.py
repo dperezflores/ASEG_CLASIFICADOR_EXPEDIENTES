@@ -18,13 +18,14 @@ from ui.common import mostrar_encabezado, requerir_expediente
 
 
 FICHA_SCHEMA_VERSION = 2
-JEV_RESULT_SCHEMA_VERSION = 3
+JEV_RESULT_SCHEMA_VERSION = 4
 
 
 def _resultado_jev_pipeline_actual(detalle, resumen) -> bool:
     columnas_requeridas = {
         "Validación estricta JEV",
         "Regla relación interna",
+        "Validación propósito sensible",
         "Decisión provisional",
     }
     claves_requeridas = {
@@ -32,6 +33,7 @@ def _resultado_jev_pipeline_actual(detalle, resumen) -> bool:
         "llamadas_jev_validacion",
         "codigos_propios_validados",
         "soportes_relacion_interna",
+        "propositos_sensibles_bloqueados",
         "candidatos_rechazados",
     }
 
@@ -41,7 +43,7 @@ def _resultado_jev_pipeline_actual(detalle, resumen) -> bool:
             set(detalle.columns)
         )
         and isinstance(resumen, dict)
-        and resumen.get("pipeline_version") == 3
+        and resumen.get("pipeline_version") == 4
         and claves_requeridas.issubset(
             set(resumen.keys())
         )
@@ -797,6 +799,13 @@ if (
                 resumen_jev["revision"],
             )
 
+            st.metric(
+                "Propósitos sensibles bloqueados",
+                resumen_jev[
+                    "propositos_sensibles_bloqueados"
+                ],
+            )
+
             st.caption(
                 f"Tiempo JEV total: "
                 f"{resumen_jev['tiempo_total_jev_s']:.2f} s · "
@@ -823,6 +832,9 @@ if (
                         "Código JEV",
                         "Confianza JEV (%)",
                         "Regla relación interna",
+                        "Validación propósito sensible",
+                        "Regla propósito sensible",
+                        "Evidencia propósito sensible",
                         "Validación estricta JEV",
                         "Confianza estricta JEV (%)",
                         "Refuerzo estructural aplicado",
@@ -864,6 +876,9 @@ if (
                             "Probabilidad estricta JEV (%)",
                             "Margen estricta JEV (%)",
                             "Control estricta JEV",
+                            "Validación propósito sensible",
+                            "Regla propósito sensible",
+                            "Evidencia propósito sensible",
                             "Refuerzo estructural aplicado",
                             "Evidencia refuerzo estructural",
                             "Error validación estricta",
