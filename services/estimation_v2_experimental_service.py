@@ -371,6 +371,8 @@ def _resultados_base_desde_jev(
             "Coincidencia conceptual; extracto sin código completo",
             "Soporte por relación interna",
             "Soporte por propósito sensible no acreditado",
+            "Soporte por identidad no equivalente al concepto formal",
+            "Soporte por competencia de confianza",
             "Candidato rechazado por equivalencia estricta",
         ):
             relacion = "soporte"
