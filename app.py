@@ -52,6 +52,11 @@ paginas = {
             icon="🧪",
         ),
         st.Page(
+            "pages/2_Diagnostico_Integral_FichaV2.py",
+            title="Diagnóstico integral · Ficha V2",
+            icon="🧭",
+        ),
+        st.Page(
             "pages/2_Relaciones_Globales.py",
             title="Relaciones globales",
             icon="🕸️",
