@@ -19,7 +19,7 @@ from services.structural_analysis_service import (
 
 
 MAX_CARACTERES_FICHA_JEV = 18_000
-PIPELINE_VERSION_FICHA_JEV = 5
+PIPELINE_VERSION_FICHA_JEV = 6
 
 UMBRAL_CANDIDATO_REFUERZO_ESTRUCTURAL = 95.0
 UMBRAL_RELACION_REFUERZO_ESTRUCTURAL = 90.0
@@ -29,6 +29,31 @@ RELACIONES_REFUERZO_ESTRUCTURAL = {
     "autentica_a",
     "anexo_de",
     "complementa_a",
+}
+
+
+CODIGOS_COMPETENCIA_INDETERMINADA = {
+    "ETR_LSI_ETR",
+    "ETR_LSI_FIN",
+    "ETR_LSI_GVO",
+    "CNT_LSI_PTC",
+}
+CONFIANZA_MIN_GANADOR_COMPETENCIA = 90.0
+DIFERENCIA_MIN_COMPETENCIA = 10.0
+
+EXCLUSIONES_IDENTIDAD_POR_CODIGO = {
+    "ETR_LSI_ETR": {
+        "marcadores_exclusion": (
+            "acta de entrega fisica",
+            "entrega fisica de obra",
+            "recepcion de planos",
+            "control de fechas para entrega de planos",
+        ),
+        "marcadores_formales_titulo": (
+            "acta de entrega recepcion",
+            "entrega recepcion final",
+        ),
+    },
 }
 
 
@@ -255,6 +280,311 @@ def _codigo_sin_extension(codigo: str) -> str:
     if valor.lower().endswith(".pdf"):
         return valor[:-4]
     return valor
+
+
+def _evaluar_exclusion_identidad_candidato(
+    fila: pd.Series,
+    codigo_candidato: str,
+) -> dict:
+    """
+    Excluye candidatos cuya propia identidad documental contradice de forma
+    explícita el concepto formal propuesto.
+
+    Primera regla controlada:
+    ETR_LSI_ETR no debe absorber una entrega física ni una recepción de planos.
+    """
+    codigo_base = _codigo_sin_extension(
+        codigo_candidato
+    ).upper()
+    regla = EXCLUSIONES_IDENTIDAD_POR_CODIGO.get(
+        codigo_base
+    )
+    if not regla:
+        return {
+            "aplica": False,
+            "regla": "",
+            "evidencia": "",
+        }
+
+    titulo = _normalizar_texto_regla(
+        fila.get("Título detectado", "")
+    )
+    acto = _normalizar_texto_regla(
+        fila.get("Acto documentado", "")
+    )
+    funcion = _normalizar_texto_regla(
+        fila.get("Función formal", "")
+    )
+    alcance = _normalizar_texto_regla(
+        fila.get("Alcance de identidad", "")
+    )
+
+    identidad = " ".join(
+        item
+        for item in (
+            titulo,
+            acto,
+            funcion,
+            alcance,
+        )
+        if item
+    )
+
+    formal_en_titulo = any(
+        marcador in titulo
+        for marcador
+        in regla["marcadores_formales_titulo"]
+    )
+    if formal_en_titulo:
+        return {
+            "aplica": False,
+            "regla": "",
+            "evidencia": "",
+        }
+
+    marcador = next(
+        (
+            item
+            for item
+            in regla["marcadores_exclusion"]
+            if item in identidad
+        ),
+        None,
+    )
+    if not marcador:
+        return {
+            "aplica": False,
+            "regla": "",
+            "evidencia": "",
+        }
+
+    return {
+        "aplica": True,
+        "regla": "identidad_excluye_concepto_formal",
+        "evidencia": (
+            f"La identidad documental contiene el marcador '{marcador}', "
+            f"que describe un acto distinto del concepto formal "
+            f"{codigo_candidato}. La exclusión se basa en la Ficha V2, "
+            "no en el nombre físico del archivo."
+        ),
+    }
+
+
+def _resolver_competencia_indeterminada(
+    detalle: pd.DataFrame,
+) -> pd.DataFrame:
+    """
+    Resuelve competencia entre varios candidatos INDETERMINADOS al mismo
+    código de representación única.
+
+    Solo actúa si:
+    - no existe ya un candidato validado para ese código;
+    - hay al menos dos candidatos indeterminados;
+    - el mejor alcanza >= 90%;
+    - supera al segundo por >= 10 pp.
+
+    Usa la confianza inicial de JEV y no realiza nuevas llamadas.
+    """
+    salida = detalle.copy()
+
+    for columna, valor in (
+        ("Competencia indeterminada aplicada", False),
+        ("Resolución competencia indeterminada", "No aplica"),
+        ("Confianza competencia (%)", 0.0),
+        ("Diferencia competencia (%)", 0.0),
+        ("Ganador competencia", ""),
+        ("Evidencia competencia", ""),
+    ):
+        if columna not in salida.columns:
+            salida[columna] = valor
+
+    if salida.empty:
+        return salida
+
+    codigos_base = (
+        salida["Código JEV"]
+        .fillna("")
+        .astype(str)
+        .apply(_codigo_sin_extension)
+        .str.upper()
+    )
+
+    for codigo in CODIGOS_COMPETENCIA_INDETERMINADA:
+        bloque_codigo = salida[
+            codigos_base.eq(codigo)
+        ].copy()
+
+        if bloque_codigo.empty:
+            continue
+
+        ya_validado = bloque_codigo[
+            bloque_codigo["Decisión provisional"]
+            .astype(str)
+            .eq("Código propio candidato validado")
+        ]
+        if not ya_validado.empty:
+            continue
+
+        candidatos = bloque_codigo[
+            bloque_codigo["Decisión provisional"]
+            .astype(str)
+            .eq("Revisión por equivalencia indeterminada")
+        ].copy()
+
+        if len(candidatos) < 2:
+            continue
+
+        puntajes = pd.to_numeric(
+            candidatos["Confianza JEV (%)"],
+            errors="coerce",
+        ).fillna(0.0)
+
+        orden = puntajes.sort_values(
+            ascending=False,
+            kind="stable",
+        )
+        indice_ganador = orden.index[0]
+        confianza_ganador = float(orden.iloc[0])
+        confianza_segundo = float(orden.iloc[1])
+        diferencia = (
+            confianza_ganador
+            - confianza_segundo
+        )
+
+        if not (
+            confianza_ganador
+            >= CONFIANZA_MIN_GANADOR_COMPETENCIA
+            and diferencia
+            >= DIFERENCIA_MIN_COMPETENCIA
+        ):
+            for indice in candidatos.index:
+                salida.at[
+                    indice,
+                    "Resolución competencia indeterminada",
+                ] = "No concluyente"
+                salida.at[
+                    indice,
+                    "Confianza competencia (%)",
+                ] = float(
+                    pd.to_numeric(
+                        pd.Series(
+                            [
+                                salida.at[
+                                    indice,
+                                    "Confianza JEV (%)",
+                                ]
+                            ]
+                        ),
+                        errors="coerce",
+                    ).fillna(0.0).iloc[0]
+                )
+                salida.at[
+                    indice,
+                    "Diferencia competencia (%)",
+                ] = round(diferencia, 2)
+            continue
+
+        ganador = str(
+            salida.at[
+                indice_ganador,
+                "Archivo",
+            ]
+        )
+
+        for indice in candidatos.index:
+            confianza_actual = float(
+                pd.to_numeric(
+                    pd.Series(
+                        [
+                            salida.at[
+                                indice,
+                                "Confianza JEV (%)",
+                            ]
+                        ]
+                    ),
+                    errors="coerce",
+                ).fillna(0.0).iloc[0]
+            )
+
+            salida.at[
+                indice,
+                "Competencia indeterminada aplicada",
+            ] = True
+            salida.at[
+                indice,
+                "Confianza competencia (%)",
+            ] = confianza_actual
+            salida.at[
+                indice,
+                "Diferencia competencia (%)",
+            ] = round(diferencia, 2)
+            salida.at[
+                indice,
+                "Ganador competencia",
+            ] = ganador
+
+            evidencia = (
+                f"Competencia por {codigo}: mejor candidato "
+                f"{confianza_ganador:.1f}% vs. segundo "
+                f"{confianza_segundo:.1f}% "
+                f"(diferencia {diferencia:.1f} pp)."
+            )
+            salida.at[
+                indice,
+                "Evidencia competencia",
+            ] = evidencia
+
+            if indice == indice_ganador:
+                salida.at[
+                    indice,
+                    "Resolución competencia indeterminada",
+                ] = "Ganador por confianza"
+                salida.at[
+                    indice,
+                    "Decisión provisional",
+                ] = "Código propio candidato validado"
+                salida.at[
+                    indice,
+                    "Código provisional",
+                ] = str(
+                    salida.at[
+                        indice,
+                        "Código JEV",
+                    ]
+                ).strip()
+                salida.at[
+                    indice,
+                    "Motivo",
+                ] = (
+                    "La equivalencia estricta quedó indeterminada, "
+                    "pero existe competencia concluyente entre varios "
+                    "candidatos al mismo código de representación única. "
+                    + evidencia
+                )
+            else:
+                salida.at[
+                    indice,
+                    "Resolución competencia indeterminada",
+                ] = "Desplazado por mayor confianza"
+                salida.at[
+                    indice,
+                    "Decisión provisional",
+                ] = "Soporte por competencia de confianza"
+                salida.at[
+                    indice,
+                    "Código provisional",
+                ] = ""
+                salida.at[
+                    indice,
+                    "Motivo",
+                ] = (
+                    "El candidato fue desplazado por otro documento "
+                    "con el mismo código propuesto y una confianza "
+                    "claramente superior. "
+                    + evidencia
+                )
+
+    return salida
 
 
 def _resolver_jerarquia_estimacion_finiquito(
@@ -993,6 +1323,9 @@ def clasificar_fichas_v2_con_jev(
     detalle["Probabilidad estricta JEV (%)"] = 0.0
     detalle["Margen estricta JEV (%)"] = None
     detalle["Control estricta JEV"] = ""
+    detalle["Exclusión identidad aplicada"] = False
+    detalle["Regla exclusión identidad"] = ""
+    detalle["Evidencia exclusión identidad"] = ""
     detalle["Refuerzo estructural aplicado"] = False
     detalle["Evidencia refuerzo estructural"] = ""
     detalle["Validación propósito sensible"] = "No aplica"
@@ -1058,6 +1391,38 @@ def clasificar_fichas_v2_con_jev(
                 "JEV no encontró equivalencia documental-funcional "
                 "con un concepto del catálogo."
             )
+            continue
+
+        exclusion_identidad = (
+            _evaluar_exclusion_identidad_candidato(
+                fila=fila,
+                codigo_candidato=codigo_jev,
+            )
+        )
+        if exclusion_identidad["aplica"]:
+            detalle.at[
+                indice,
+                "Exclusión identidad aplicada",
+            ] = True
+            detalle.at[
+                indice,
+                "Regla exclusión identidad",
+            ] = exclusion_identidad["regla"]
+            detalle.at[
+                indice,
+                "Evidencia exclusión identidad",
+            ] = exclusion_identidad["evidencia"]
+            detalle.at[
+                indice,
+                "Decisión provisional",
+            ] = (
+                "Soporte por identidad no equivalente "
+                "al concepto formal"
+            )
+            detalle.at[
+                indice,
+                "Motivo",
+            ] = exclusion_identidad["evidencia"]
             continue
 
         if alcance == "parcial_extracto":
@@ -1465,6 +1830,10 @@ def clasificar_fichas_v2_con_jev(
                     "refuerzo estructural fuerte compatible."
                 )
 
+    detalle = _resolver_competencia_indeterminada(
+        detalle
+    )
+
     llamadas_clasificacion = len(detalle)
     llamadas_total = (
         llamadas_clasificacion
@@ -1546,6 +1915,18 @@ def clasificar_fichas_v2_con_jev(
                     "Soporte por propósito sensible no acreditado",
                     "Revisión por propósito sensible no acreditado",
                 ]
+            ).sum()
+        ),
+        "exclusiones_identidad_aplicadas": int(
+            detalle[
+                "Exclusión identidad aplicada"
+            ].fillna(False).astype(bool).sum()
+        ),
+        "competencias_indeterminadas_resueltas": int(
+            detalle[
+                "Resolución competencia indeterminada"
+            ].astype(str).eq(
+                "Ganador por confianza"
             ).sum()
         ),
         "candidatos_rechazados": int(
