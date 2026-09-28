@@ -74,6 +74,7 @@ def _resultados_base_desde_jev(
             "Fuera de catálogo",
             "Coincidencia conceptual; extracto sin código completo",
             "Soporte por relación interna",
+            "Soporte por propósito sensible no acreditado",
             "Candidato rechazado por equivalencia estricta",
         ):
             relacion = "soporte"
