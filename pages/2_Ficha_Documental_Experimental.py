@@ -18,7 +18,7 @@ from ui.common import mostrar_encabezado, requerir_expediente
 
 
 FICHA_SCHEMA_VERSION = 2
-JEV_RESULT_SCHEMA_VERSION = 4
+JEV_RESULT_SCHEMA_VERSION = 5
 
 
 def _resultado_jev_pipeline_actual(detalle, resumen) -> bool:
@@ -26,6 +26,7 @@ def _resultado_jev_pipeline_actual(detalle, resumen) -> bool:
         "Validación estricta JEV",
         "Regla relación interna",
         "Validación propósito sensible",
+        "Jerarquía contexto unidad aplicada",
         "Decisión provisional",
     }
     claves_requeridas = {
@@ -34,6 +35,7 @@ def _resultado_jev_pipeline_actual(detalle, resumen) -> bool:
         "codigos_propios_validados",
         "soportes_relacion_interna",
         "propositos_sensibles_bloqueados",
+        "jerarquias_unidad_aplicadas",
         "candidatos_rechazados",
     }
 
@@ -43,7 +45,7 @@ def _resultado_jev_pipeline_actual(detalle, resumen) -> bool:
             set(detalle.columns)
         )
         and isinstance(resumen, dict)
-        and resumen.get("pipeline_version") == 4
+        and resumen.get("pipeline_version") == 5
         and claves_requeridas.issubset(
             set(resumen.keys())
         )
@@ -806,6 +808,13 @@ if (
                 ],
             )
 
+            st.metric(
+                "Jerarquías de unidad aplicadas",
+                resumen_jev[
+                    "jerarquias_unidad_aplicadas"
+                ],
+            )
+
             st.caption(
                 f"Tiempo JEV total: "
                 f"{resumen_jev['tiempo_total_jev_s']:.2f} s · "
@@ -828,6 +837,11 @@ if (
                         "Alcance documental",
                         "Unidad estructural",
                         "Consecutivo unidad",
+                        "Concepto JEV original",
+                        "Código JEV original",
+                        "Jerarquía contexto unidad aplicada",
+                        "Regla jerarquía unidad",
+                        "Evidencia jerarquía unidad",
                         "Concepto JEV",
                         "Código JEV",
                         "Confianza JEV (%)",
@@ -871,6 +885,11 @@ if (
                             "Archivo",
                             "ID lógico",
                             "Top 3 JEV",
+                            "Concepto JEV original",
+                            "Código JEV original",
+                            "Jerarquía contexto unidad aplicada",
+                            "Regla jerarquía unidad",
+                            "Evidencia jerarquía unidad",
                             "Probabilidad elegida JEV (%)",
                             "Decisión original estricta JEV",
                             "Probabilidad estricta JEV (%)",
