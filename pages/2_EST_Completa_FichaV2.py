@@ -9,10 +9,13 @@ from services.openai_multimodal_service import (
     MODELOS,
     openai_configurado,
 )
+from services.profile_jev_service import (
+    PIPELINE_VERSION_FICHA_JEV,
+)
 from ui.common import mostrar_encabezado, requerir_expediente
 
 
-RESULTADO_EST_V2_SCHEMA_VERSION = 6
+RESULTADO_EST_V2_SCHEMA_VERSION = 7
 
 
 mostrar_encabezado(
@@ -95,7 +98,10 @@ st.caption(
     "Las Fichas V2 ya existentes solo se reutilizan cuando coinciden SHA-256 "
     "del PDF, versión de esquema, versión de prompt y modelo. La comparación "
     "conjunta existente puede realizar una llamada multimodal adicional sobre "
-    "los candidatos al código EST_n."
+    "los candidatos al código EST_n. "
+    f"Esta página exige pipeline JEV v{PIPELINE_VERSION_FICHA_JEV}; si el "
+    "despliegue todavía sirve una versión anterior, la ejecución se detiene "
+    "antes de la comparación conjunta."
 )
 
 if st.button(
@@ -270,6 +276,14 @@ if (
         resumen.get(
             "estabilizaciones_rol_soporte",
             0,
+        ),
+    )
+
+    st.metric(
+        "Pipeline JEV ejecutado",
+        resumen.get(
+            "pipeline_jev_version",
+            "—",
         ),
     )
 
