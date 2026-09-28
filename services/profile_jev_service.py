@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from pathlib import PurePosixPath
+import re
+import unicodedata
 
 import pandas as pd
 
@@ -27,6 +29,217 @@ RELACIONES_REFUERZO_ESTRUCTURAL = {
     "anexo_de",
     "complementa_a",
 }
+
+
+# Conceptos cuyo propósito no puede inferirse solo por similitud de tipo
+# documental. La primera regla controlada corresponde a Factura(s) de anticipo.
+PROPOSITOS_SENSIBLES = {
+    "factura_anticipo": {
+        "concepto_requiere": ("factura", "anticipo"),
+        "evidencia_positiva": (
+            "factura de anticipo",
+            "factura por anticipo",
+            "pago de anticipo",
+            "por concepto de anticipo",
+            "anticipo contractual",
+            "porcentaje de anticipo",
+            "amortizacion de anticipo",
+            "amortizacion del anticipo",
+        ),
+        "evidencia_contextual_estimacion": (
+            "recibo por pago de estimacion",
+            "pago de estimacion",
+        ),
+    },
+}
+
+
+def _normalizar_texto_regla(valor: str) -> str:
+    texto = unicodedata.normalize(
+        "NFKD",
+        str(valor),
+    )
+    texto = "".join(
+        caracter
+        for caracter in texto
+        if not unicodedata.combining(caracter)
+    )
+    texto = texto.lower()
+    texto = re.sub(r"[^a-z0-9]+", " ", texto)
+    return re.sub(r"\s+", " ", texto).strip()
+
+
+def _regla_proposito_sensible(
+    detalle: pd.DataFrame,
+    fila: pd.Series,
+) -> dict:
+    """
+    Valida conceptos cuyo propósito debe estar expresamente acreditado.
+
+    Resultado:
+    - aplica=False: no es un concepto sensible;
+    - acreditado=True: puede continuar a equivalencia estricta;
+    - acreditado=False + soporte_contextual=True: no asignar código y tratar
+      como soporte contextual de la estimación;
+    - acreditado=False sin soporte contextual: revisión.
+    """
+    concepto = _normalizar_texto_regla(
+        fila.get("Concepto JEV", "")
+    )
+
+    regla_id = None
+    regla = None
+    for identificador, candidata in (
+        PROPOSITOS_SENSIBLES.items()
+    ):
+        if all(
+            termino in concepto
+            for termino in candidata[
+                "concepto_requiere"
+            ]
+        ):
+            regla_id = identificador
+            regla = candidata
+            break
+
+    if regla is None:
+        return {
+            "aplica": False,
+            "acreditado": True,
+            "soporte_contextual": False,
+            "evidencia": "",
+            "regla": "",
+        }
+
+    texto_propio = _normalizar_texto_regla(
+        " ".join(
+            [
+                str(
+                    fila.get(
+                        "Título detectado",
+                        "",
+                    )
+                ),
+                str(
+                    fila.get(
+                        "Función formal",
+                        "",
+                    )
+                ),
+                str(
+                    fila.get(
+                        "Acto documentado",
+                        "",
+                    )
+                ),
+                str(
+                    fila.get(
+                        "Alcance de identidad",
+                        "",
+                    )
+                ),
+                str(
+                    fila.get(
+                        "Texto representativo ficha",
+                        "",
+                    )
+                ),
+                str(
+                    fila.get(
+                        "Datos clave ficha",
+                        "",
+                    )
+                ),
+            ]
+        )
+    )
+
+    coincidencias_positivas = [
+        frase
+        for frase in regla["evidencia_positiva"]
+        if _normalizar_texto_regla(
+            frase
+        ) in texto_propio
+    ]
+
+    if coincidencias_positivas:
+        return {
+            "aplica": True,
+            "acreditado": True,
+            "soporte_contextual": False,
+            "evidencia": (
+                "Propósito acreditado en la Ficha V2: "
+                + ", ".join(
+                    coincidencias_positivas
+                )
+            ),
+            "regla": regla_id,
+        }
+
+    ruta = str(
+        fila.get("Ruta original", "")
+    )
+    mismo_archivo = detalle[
+        detalle["Ruta original"]
+        .astype(str)
+        .eq(ruta)
+    ]
+
+    texto_contextual = _normalizar_texto_regla(
+        " ".join(
+            mismo_archivo[
+                "Título detectado"
+            ].fillna("").astype(str).tolist()
+            + mismo_archivo[
+                "Función formal"
+            ].fillna("").astype(str).tolist()
+            + mismo_archivo[
+                "Acto documentado"
+            ].fillna("").astype(str).tolist()
+            + mismo_archivo[
+                "Texto representativo ficha"
+            ].fillna("").astype(str).tolist()
+        )
+    )
+
+    coincidencias_contextuales = [
+        frase
+        for frase
+        in regla["evidencia_contextual_estimacion"]
+        if _normalizar_texto_regla(
+            frase
+        ) in texto_contextual
+    ]
+
+    soporte_contextual = bool(
+        coincidencias_contextuales
+        and str(
+            fila.get("Unidad estructural", "")
+        )
+        == "Estimación"
+    )
+
+    evidencia = (
+        "No se encontró evidencia positiva del propósito "
+        f"'{regla_id}' en la Ficha V2."
+    )
+    if coincidencias_contextuales:
+        evidencia += (
+            " El mismo PDF contiene evidencia de pago de "
+            "estimación: "
+            + ", ".join(
+                coincidencias_contextuales
+            )
+            + "."
+        )
+
+    return {
+        "aplica": True,
+        "acreditado": False,
+        "soporte_contextual": soporte_contextual,
+        "evidencia": evidencia,
+        "regla": regla_id,
+    }
 
 
 def _codigo_sin_extension(codigo: str) -> str:
@@ -513,6 +726,12 @@ def clasificar_fichas_v2_con_jev(
                 "Límites de identidad": str(
                     fila.get("Límites de identidad", "")
                 ),
+                "Texto representativo ficha": str(
+                    fila.get("Texto representativo", "")
+                ),
+                "Datos clave ficha": str(
+                    fila.get("Datos clave", "")
+                ),
                 "Alcance documental": str(
                     fila.get("Alcance documental", "")
                 ),
@@ -569,6 +788,9 @@ def clasificar_fichas_v2_con_jev(
     detalle["Control estricta JEV"] = ""
     detalle["Refuerzo estructural aplicado"] = False
     detalle["Evidencia refuerzo estructural"] = ""
+    detalle["Validación propósito sensible"] = "No aplica"
+    detalle["Regla propósito sensible"] = ""
+    detalle["Evidencia propósito sensible"] = ""
     detalle["Error validación estricta"] = ""
     detalle["Tokens entrada JEV validación"] = 0
     detalle["Tokens salida JEV validación"] = 0
@@ -726,6 +948,76 @@ def clasificar_fichas_v2_con_jev(
                 "hereda el código de su documento principal."
             )
             continue
+
+        # Algunos conceptos requieren que su finalidad esté expresamente
+        # acreditada en la Ficha V2 antes de permitir la equivalencia estricta.
+        proposito = _regla_proposito_sensible(
+            detalle=detalle,
+            fila=fila,
+        )
+
+        if proposito["aplica"]:
+            detalle.at[
+                indice,
+                "Regla propósito sensible",
+            ] = proposito["regla"]
+            detalle.at[
+                indice,
+                "Evidencia propósito sensible",
+            ] = proposito["evidencia"]
+
+            if proposito["acreditado"]:
+                detalle.at[
+                    indice,
+                    "Validación propósito sensible",
+                ] = "Acreditado"
+            elif proposito["soporte_contextual"]:
+                detalle.at[
+                    indice,
+                    "Validación propósito sensible",
+                ] = (
+                    "No acreditado; soporte contextual"
+                )
+                detalle.at[
+                    indice,
+                    "Decisión provisional",
+                ] = (
+                    "Soporte por propósito sensible "
+                    "no acreditado"
+                )
+                detalle.at[
+                    indice,
+                    "Motivo",
+                ] = (
+                    "El concepto candidato exige una finalidad "
+                    "documental explícita que la Ficha V2 no acredita. "
+                    "Además, el mismo PDF contiene evidencia de que la "
+                    "pieza forma parte del pago de una estimación. "
+                    + proposito["evidencia"]
+                )
+                continue
+            else:
+                detalle.at[
+                    indice,
+                    "Validación propósito sensible",
+                ] = "No acreditado"
+                detalle.at[
+                    indice,
+                    "Decisión provisional",
+                ] = (
+                    "Revisión por propósito sensible "
+                    "no acreditado"
+                )
+                detalle.at[
+                    indice,
+                    "Motivo",
+                ] = (
+                    "El concepto candidato exige una finalidad "
+                    "documental explícita, pero la Ficha V2 no aporta "
+                    "evidencia positiva suficiente. "
+                    + proposito["evidencia"]
+                )
+                continue
 
         # El resto de códigos propios debe superar una comparación
         # estricta contra UN solo concepto candidato.
@@ -990,7 +1282,7 @@ def clasificar_fichas_v2_con_jev(
     )
 
     resumen = {
-        "pipeline_version": 3,
+        "pipeline_version": 4,
         "documentos_logicos_evaluados": len(detalle),
         "llamadas_jev_clasificacion": llamadas_clasificacion,
         "llamadas_jev_validacion": llamadas_validacion,
@@ -1033,6 +1325,16 @@ def clasificar_fichas_v2_con_jev(
             detalle[
                 "Refuerzo estructural aplicado"
             ].fillna(False).astype(bool).sum()
+        ),
+        "propositos_sensibles_bloqueados": int(
+            detalle[
+                "Decisión provisional"
+            ].astype(str).isin(
+                [
+                    "Soporte por propósito sensible no acreditado",
+                    "Revisión por propósito sensible no acreditado",
+                ]
+            ).sum()
         ),
         "candidatos_rechazados": int(
             (
