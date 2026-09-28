@@ -15,7 +15,7 @@ from services.profile_jev_service import (
 from ui.common import mostrar_encabezado, requerir_expediente
 
 
-RESULTADO_EST_V2_SCHEMA_VERSION = 7
+RESULTADO_EST_V2_SCHEMA_VERSION = 8
 
 
 mostrar_encabezado(
@@ -437,6 +437,14 @@ if (
             "Jerarquía contexto unidad aplicada",
             "Regla jerarquía unidad",
             "Evidencia jerarquía unidad",
+            "Exclusión identidad aplicada",
+            "Regla exclusión identidad",
+            "Evidencia exclusión identidad",
+            "Resolución competencia indeterminada",
+            "Confianza competencia (%)",
+            "Diferencia competencia (%)",
+            "Ganador competencia",
+            "Evidencia competencia",
             "Concepto JEV",
             "Código JEV",
             "Confianza JEV (%)",
