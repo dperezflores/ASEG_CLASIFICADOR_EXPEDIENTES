@@ -33,6 +33,13 @@ RELACIONES_REFUERZO_ESTRUCTURAL = {
 
 # Conceptos cuyo propósito no puede inferirse solo por similitud de tipo
 # documental. La primera regla controlada corresponde a Factura(s) de anticipo.
+MARCADORES_IDENTIDAD_CUERPO_ESTIMACION = (
+    "caratula de estimacion",
+    "hoja de estimacion",
+    "estimacion constructor de obra",
+)
+
+
 PROPOSITOS_SENSIBLES = {
     "factura_anticipo": {
         "concepto_requiere": ("factura", "anticipo"),
@@ -247,6 +254,169 @@ def _codigo_sin_extension(codigo: str) -> str:
     if valor.lower().endswith(".pdf"):
         return valor[:-4]
     return valor
+
+
+def _resolver_jerarquia_estimacion_finiquito(
+    fila_ficha: pd.Series,
+    contexto: dict,
+    procedimiento: str,
+    catalogo_operativo: pd.DataFrame,
+    concepto_candidato: str,
+    codigo_candidato: str,
+) -> dict:
+    """
+    Evita que la palabra 'finiquito' cambie la identidad principal de una
+    pieza que la Ficha V2 reconoce como cuerpo formal de una EST_n.
+
+    Solo actúa cuando:
+    - la carpeta estructural es una unidad Estimación con consecutivo;
+    - JEV propuso un código/concepto de Finiquito;
+    - la identidad detectada contiene un marcador fuerte de cuerpo de
+      estimación (carátula, hoja de estimación o estimación constructor).
+
+    No usa el nombre físico del archivo. El candidato se redirige al EST_n
+    operativo y la comparación conjunta decide después representante,
+    componente o soporte.
+    """
+    if (
+        str(contexto.get("unidad", ""))
+        != "Estimación"
+        or contexto.get("consecutivo") is None
+    ):
+        return {
+            "aplica": False,
+            "concepto": concepto_candidato,
+            "codigo": codigo_candidato,
+            "regla": "",
+            "evidencia": "",
+        }
+
+    concepto_norm = _normalizar_texto_regla(
+        concepto_candidato
+    )
+    codigo_norm = _codigo_sin_extension(
+        codigo_candidato
+    ).upper()
+
+    candidato_finiquito = (
+        "finiquito" in concepto_norm
+        or codigo_norm.endswith("_FIN")
+    )
+    if not candidato_finiquito:
+        return {
+            "aplica": False,
+            "concepto": concepto_candidato,
+            "codigo": codigo_candidato,
+            "regla": "",
+            "evidencia": "",
+        }
+
+    identidad = _normalizar_texto_regla(
+        " ".join(
+            [
+                str(
+                    fila_ficha.get(
+                        "Título detectado",
+                        "",
+                    )
+                ),
+                str(
+                    fila_ficha.get(
+                        "Función formal",
+                        "",
+                    )
+                ),
+                str(
+                    fila_ficha.get(
+                        "Acto documentado",
+                        "",
+                    )
+                ),
+                str(
+                    fila_ficha.get(
+                        "Alcance de identidad",
+                        "",
+                    )
+                ),
+            ]
+        )
+    )
+
+    marcador = next(
+        (
+            item
+            for item
+            in MARCADORES_IDENTIDAD_CUERPO_ESTIMACION
+            if item in identidad
+        ),
+        None,
+    )
+    if not marcador:
+        return {
+            "aplica": False,
+            "concepto": concepto_candidato,
+            "codigo": codigo_candidato,
+            "regla": "",
+            "evidencia": "",
+        }
+
+    consecutivo = int(
+        contexto["consecutivo"]
+    )
+    codigo_objetivo_base = (
+        f"EJE_{procedimiento.upper()}_EST_"
+        f"{consecutivo}"
+    )
+
+    catalogo = catalogo_operativo.copy()
+    codigos = (
+        catalogo["Código"]
+        .fillna("")
+        .astype(str)
+        .apply(_codigo_sin_extension)
+        .str.upper()
+    )
+    coincidencias = catalogo[
+        codigos.eq(
+            codigo_objetivo_base.upper()
+        )
+    ]
+
+    if coincidencias.empty:
+        return {
+            "aplica": False,
+            "concepto": concepto_candidato,
+            "codigo": codigo_candidato,
+            "regla": "",
+            "evidencia": (
+                "La identidad parece pertenecer al cuerpo de la "
+                "estimación, pero no se encontró el código EST_n "
+                "correspondiente en el catálogo operativo."
+            ),
+        }
+
+    fila_catalogo = coincidencias.iloc[0]
+    codigo_objetivo = str(
+        fila_catalogo["Código"]
+    ).strip()
+    concepto_objetivo = str(
+        fila_catalogo["Concepto"]
+    ).strip()
+
+    return {
+        "aplica": True,
+        "concepto": concepto_objetivo,
+        "codigo": codigo_objetivo,
+        "regla": "estimacion_finiquito_no_cambia_identidad",
+        "evidencia": (
+            f"La Ficha V2 identifica la pieza mediante el marcador "
+            f"'{marcador}' dentro de la unidad Estimación {consecutivo}. "
+            f"'Finiquito' se interpreta como condición/fase de esa "
+            f"estimación y no como identidad documental independiente. "
+            f"El candidato {codigo_candidato or concepto_candidato} se "
+            f"redirige a {codigo_objetivo} para comparación conjunta."
+        ),
+    }
 
 
 def _contexto_unidad_por_ruta(
@@ -679,6 +849,31 @@ def clasificar_fichas_v2_con_jev(
             catalogo=catalogo,
         )
 
+        concepto_jev_original = str(
+            resultado["Resultado Ruta A"]
+        ).strip()
+        codigo_jev_original = str(
+            resultado["Código Ruta A"]
+        ).strip()
+
+        jerarquia_unidad = (
+            _resolver_jerarquia_estimacion_finiquito(
+                fila_ficha=fila,
+                contexto=contexto,
+                procedimiento=procedimiento,
+                catalogo_operativo=catalogo,
+                concepto_candidato=concepto_jev_original,
+                codigo_candidato=codigo_jev_original,
+            )
+        )
+
+        concepto_jev_resuelto = str(
+            jerarquia_unidad["concepto"]
+        ).strip()
+        codigo_jev_resuelto = str(
+            jerarquia_unidad["codigo"]
+        ).strip()
+
         top3 = resultado.get("Top 3", [])
         top3_texto = " | ".join(
             (
@@ -744,12 +939,23 @@ def clasificar_fichas_v2_con_jev(
                 "Catálogo operativo aplicado": (
                     not cambios_familia.empty
                 ),
-                "Concepto JEV": str(
-                    resultado["Resultado Ruta A"]
-                ).strip(),
-                "Código JEV": str(
-                    resultado["Código Ruta A"]
-                ).strip(),
+                "Concepto JEV original": (
+                    concepto_jev_original
+                ),
+                "Código JEV original": (
+                    codigo_jev_original
+                ),
+                "Jerarquía contexto unidad aplicada": bool(
+                    jerarquia_unidad["aplica"]
+                ),
+                "Regla jerarquía unidad": str(
+                    jerarquia_unidad["regla"]
+                ),
+                "Evidencia jerarquía unidad": str(
+                    jerarquia_unidad["evidencia"]
+                ),
+                "Concepto JEV": concepto_jev_resuelto,
+                "Código JEV": codigo_jev_resuelto,
                 "Confianza JEV (%)": float(
                     resultado.get("Confianza A", 0.0)
                 ),
@@ -1282,8 +1488,13 @@ def clasificar_fichas_v2_con_jev(
     )
 
     resumen = {
-        "pipeline_version": 4,
+        "pipeline_version": 5,
         "documentos_logicos_evaluados": len(detalle),
+        "jerarquias_unidad_aplicadas": int(
+            detalle[
+                "Jerarquía contexto unidad aplicada"
+            ].fillna(False).astype(bool).sum()
+        ),
         "llamadas_jev_clasificacion": llamadas_clasificacion,
         "llamadas_jev_validacion": llamadas_validacion,
         "llamadas_jev": llamadas_total,
