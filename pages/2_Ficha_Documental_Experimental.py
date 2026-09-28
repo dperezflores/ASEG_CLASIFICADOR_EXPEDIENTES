@@ -18,7 +18,7 @@ from ui.common import mostrar_encabezado, requerir_expediente
 
 
 FICHA_SCHEMA_VERSION = 2
-JEV_RESULT_SCHEMA_VERSION = 2
+JEV_RESULT_SCHEMA_VERSION = 3
 
 
 def _resultado_jev_pipeline_actual(detalle, resumen) -> bool:
@@ -41,7 +41,7 @@ def _resultado_jev_pipeline_actual(detalle, resumen) -> bool:
             set(detalle.columns)
         )
         and isinstance(resumen, dict)
-        and resumen.get("pipeline_version") == 2
+        and resumen.get("pipeline_version") == 3
         and claves_requeridas.issubset(
             set(resumen.keys())
         )
@@ -825,6 +825,8 @@ if (
                         "Regla relación interna",
                         "Validación estricta JEV",
                         "Confianza estricta JEV (%)",
+                        "Refuerzo estructural aplicado",
+                        "Evidencia refuerzo estructural",
                         "Decisión provisional",
                         "Código provisional",
                         "Motivo",
@@ -862,6 +864,8 @@ if (
                             "Probabilidad estricta JEV (%)",
                             "Margen estricta JEV (%)",
                             "Control estricta JEV",
+                            "Refuerzo estructural aplicado",
+                            "Evidencia refuerzo estructural",
                             "Error validación estricta",
                             "Texto enviado a JEV",
                             "Tokens entrada JEV clasificación",
@@ -883,6 +887,7 @@ if (
                 "elige representante aquí: CARÁTULA/ESTIMACIÓN continúan hacia "
                 "la comparación conjunta validada. Una pieza autentica_a o "
                 "soporte_de no hereda el mismo código del documento principal. "
-                "Los demás códigos propios solo se conservan cuando la segunda "
-                "comparación JEV confirma equivalencia."
+                "Si la validación estricta queda indeterminada, un código propio "
+                "solo puede conservarse mediante refuerzo estructural fuerte; "
+                "una decisión no_equivalente nunca se revierte."
             )
