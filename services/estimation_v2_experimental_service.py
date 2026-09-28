@@ -10,6 +10,7 @@ from services.document_profile_service import (
     analizar_muestra_fichas_documentales,
 )
 from services.profile_jev_service import (
+    PIPELINE_VERSION_FICHA_JEV,
     clasificar_fichas_v2_con_jev,
 )
 from services.structural_analysis_service import (
@@ -1178,6 +1179,22 @@ def ejecutar_est_completa_ficha_v2(
         )
     )
 
+    version_recibida = int(
+        resumen_jev.get("pipeline_version", 0)
+        or 0
+    )
+    if version_recibida != PIPELINE_VERSION_FICHA_JEV:
+        raise RuntimeError(
+            "El servicio JEV activo no corresponde a la versión requerida "
+            "por este experimento. "
+            f"Esperada: {PIPELINE_VERSION_FICHA_JEV}; "
+            f"recibida: {version_recibida or 'sin versión'}. "
+            "No se ejecutó la comparación conjunta ni se generó una decisión "
+            "final. Las Fichas V2 existentes permanecen en caché, por lo que "
+            "solo debes esperar a que termine el despliegue y volver a ejecutar "
+            "esta prueba."
+        )
+
     resultados_base = _resultados_base_desde_jev(
         detalle_jev
     )
@@ -1296,6 +1313,7 @@ def ejecutar_est_completa_ficha_v2(
                 0.0,
             )
         ),
+        "pipeline_jev_version": version_recibida,
         "llamadas_jev": int(
             resumen_jev.get(
                 "llamadas_jev",
