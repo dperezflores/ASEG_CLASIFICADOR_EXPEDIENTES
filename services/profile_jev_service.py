@@ -18,6 +18,16 @@ from services.structural_analysis_service import (
 
 MAX_CARACTERES_FICHA_JEV = 18_000
 
+UMBRAL_CANDIDATO_REFUERZO_ESTRUCTURAL = 95.0
+UMBRAL_RELACION_REFUERZO_ESTRUCTURAL = 90.0
+UMBRAL_SOPORTE_REFUERZO_ESTRUCTURAL = 80.0
+RELACIONES_REFUERZO_ESTRUCTURAL = {
+    "soporte_de",
+    "autentica_a",
+    "anexo_de",
+    "complementa_a",
+}
+
 
 def _codigo_sin_extension(codigo: str) -> str:
     valor = str(codigo).strip()
@@ -213,6 +223,131 @@ def _relaciones_subordinadas(
         )
 
     return salida
+
+
+def _evaluar_refuerzo_estructural(
+    relaciones: pd.DataFrame,
+    detalle: pd.DataFrame,
+    ruta: str,
+    logical_id: str,
+    codigo_candidato: str,
+    confianza_candidato: float,
+) -> tuple[bool, str]:
+    """
+    Refuerzo determinístico para una equivalencia JEV indeterminada.
+
+    Solo aplica cuando:
+    - el documento principal tiene candidato inicial de alta confianza;
+    - existe una relación interna entrante fuerte hacia ese documento;
+    - la pieza subordinada recibió el MISMO código candidato;
+    - la pieza subordinada también tiene confianza inicial suficiente.
+
+    Nunca convierte una decisión no_equivalente en válida y no se activa sin
+    una relación explícita de la Ficha V2.
+    """
+    if (
+        not codigo_candidato
+        or confianza_candidato
+        < UMBRAL_CANDIDATO_REFUERZO_ESTRUCTURAL
+        or relaciones.empty
+        or detalle.empty
+    ):
+        return False, ""
+
+    codigo_base = _codigo_sin_extension(
+        codigo_candidato
+    ).upper()
+
+    relacionadas = relaciones[
+        relaciones["Ruta original"]
+        .astype(str)
+        .eq(str(ruta))
+    ].copy()
+
+    if relacionadas.empty:
+        return False, ""
+
+    relacionadas = relacionadas[
+        relacionadas["Destino"]
+        .astype(str)
+        .eq(str(logical_id))
+        & relacionadas["Relación"]
+        .astype(str)
+        .isin(RELACIONES_REFUERZO_ESTRUCTURAL)
+    ].copy()
+
+    if relacionadas.empty:
+        return False, ""
+
+    evidencias = []
+
+    for _, relacion in relacionadas.iterrows():
+        confianza_relacion = float(
+            relacion.get("Confianza (%)", 0.0)
+            or 0.0
+        )
+        ids_validos = bool(
+            relacion.get("IDs válidos", True)
+        )
+
+        if (
+            not ids_validos
+            or confianza_relacion
+            < UMBRAL_RELACION_REFUERZO_ESTRUCTURAL
+        ):
+            continue
+
+        origen = str(
+            relacion.get("Origen", "")
+        ).strip()
+        tipo = str(
+            relacion.get("Relación", "")
+        ).strip()
+
+        soporte = detalle[
+            detalle["Ruta original"]
+            .astype(str)
+            .eq(str(ruta))
+            & detalle["ID lógico"]
+            .astype(str)
+            .eq(origen)
+        ]
+
+        if soporte.empty:
+            continue
+
+        soporte_fila = soporte.iloc[0]
+        codigo_soporte = _codigo_sin_extension(
+            soporte_fila.get("Código JEV", "")
+        ).upper()
+        confianza_soporte = float(
+            soporte_fila.get(
+                "Confianza JEV (%)",
+                0.0,
+            )
+            or 0.0
+        )
+
+        if (
+            codigo_soporte != codigo_base
+            or confianza_soporte
+            < UMBRAL_SOPORTE_REFUERZO_ESTRUCTURAL
+        ):
+            continue
+
+        evidencias.append(
+            (
+                f"{origen} {tipo} {logical_id}; "
+                f"relación {confianza_relacion:.1f}%, "
+                f"mismo candidato {codigo_candidato} con "
+                f"{confianza_soporte:.1f}% en la pieza subordinada"
+            )
+        )
+
+    if not evidencias:
+        return False, ""
+
+    return True, " | ".join(evidencias)
 
 
 def clasificar_fichas_v2_con_jev(
@@ -432,6 +567,8 @@ def clasificar_fichas_v2_con_jev(
     detalle["Probabilidad estricta JEV (%)"] = 0.0
     detalle["Margen estricta JEV (%)"] = None
     detalle["Control estricta JEV"] = ""
+    detalle["Refuerzo estructural aplicado"] = False
+    detalle["Evidencia refuerzo estructural"] = ""
     detalle["Error validación estricta"] = ""
     detalle["Tokens entrada JEV validación"] = 0
     detalle["Tokens salida JEV validación"] = 0
@@ -768,17 +905,66 @@ def clasificar_fichas_v2_con_jev(
                 "y funcionalmente equivalente al concepto candidato."
             )
         else:
-            detalle.at[
-                indice,
-                "Decisión provisional",
-            ] = "Revisión por equivalencia indeterminada"
-            detalle.at[
-                indice,
-                "Motivo",
-            ] = (
-                "JEV no alcanzó evidencia suficiente para confirmar "
-                "o rechazar el candidato sin reinterpretar la ficha."
+            refuerzo, evidencia_refuerzo = (
+                _evaluar_refuerzo_estructural(
+                    relaciones=relaciones,
+                    detalle=detalle,
+                    ruta=ruta,
+                    logical_id=logical_id,
+                    codigo_candidato=codigo_jev,
+                    confianza_candidato=float(
+                        fila.get(
+                            "Confianza JEV (%)",
+                            0.0,
+                        )
+                        or 0.0
+                    ),
+                )
             )
+
+            detalle.at[
+                indice,
+                "Refuerzo estructural aplicado",
+            ] = refuerzo
+            detalle.at[
+                indice,
+                "Evidencia refuerzo estructural",
+            ] = evidencia_refuerzo
+
+            if refuerzo:
+                detalle.at[
+                    indice,
+                    "Decisión provisional",
+                ] = "Código propio candidato validado"
+                detalle.at[
+                    indice,
+                    "Código provisional",
+                ] = codigo_jev
+                detalle.at[
+                    indice,
+                    "Motivo",
+                ] = (
+                    "La equivalencia estricta JEV quedó indeterminada, "
+                    "pero se acepta de forma controlada por refuerzo "
+                    "estructural fuerte de la Ficha V2: candidato inicial "
+                    "de alta confianza, relación interna explícita hacia "
+                    "el documento principal y pieza subordinada con el "
+                    "mismo código candidato. "
+                    + evidencia_refuerzo
+                )
+            else:
+                detalle.at[
+                    indice,
+                    "Decisión provisional",
+                ] = "Revisión por equivalencia indeterminada"
+                detalle.at[
+                    indice,
+                    "Motivo",
+                ] = (
+                    "JEV no alcanzó evidencia suficiente para confirmar "
+                    "o rechazar el candidato y la Ficha V2 no aportó un "
+                    "refuerzo estructural fuerte compatible."
+                )
 
     llamadas_clasificacion = len(detalle)
     llamadas_total = (
@@ -804,7 +990,7 @@ def clasificar_fichas_v2_con_jev(
     )
 
     resumen = {
-        "pipeline_version": 2,
+        "pipeline_version": 3,
         "documentos_logicos_evaluados": len(detalle),
         "llamadas_jev_clasificacion": llamadas_clasificacion,
         "llamadas_jev_validacion": llamadas_validacion,
@@ -842,6 +1028,11 @@ def clasificar_fichas_v2_con_jev(
                 detalle["Decisión provisional"]
                 == "Código propio candidato validado"
             ).sum()
+        ),
+        "codigos_validados_por_refuerzo": int(
+            detalle[
+                "Refuerzo estructural aplicado"
+            ].fillna(False).astype(bool).sum()
         ),
         "candidatos_rechazados": int(
             (
