@@ -12,7 +12,7 @@ from services.openai_multimodal_service import (
 from ui.common import mostrar_encabezado, requerir_expediente
 
 
-RESULTADO_EST_V2_SCHEMA_VERSION = 4
+RESULTADO_EST_V2_SCHEMA_VERSION = 5
 
 
 mostrar_encabezado(
@@ -265,6 +265,14 @@ if (
         f"{resumen['costo_api_total_usd']:.6f}",
     )
 
+    st.metric(
+        "Roles estabilizados como soporte",
+        resumen.get(
+            "estabilizaciones_rol_soporte",
+            0,
+        ),
+    )
+
     st.caption(
         f"Representante propuesto: "
         f"{resumen['representante'] or 'pendiente'} · "
@@ -326,6 +334,9 @@ if (
         "Rol propuesto en la unidad",
         "Grupo lógico",
         "Relación consolidada",
+        "Estabilización rol aplicada",
+        "Regla estabilización rol",
+        "Evidencia estabilización rol",
         "Acción provisional",
     ]
     columnas_finales = [
