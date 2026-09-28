@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import re
+import unicodedata
+
 import pandas as pd
 
 from services.catalog_service import cargar_catalogo
@@ -18,6 +21,298 @@ from services.unit_content_analysis_service import (
     agrupar_resultados_unidad,
     consolidar_candidatos_unidad,
 )
+
+
+REGLAS_ROL_INTRINSECO_SOPORTE = {
+    "numeros_generadores": {
+        "marcadores": (
+            "numero generador",
+            "numeros generadores",
+            "generador de obra",
+            "generadores de obra",
+            "formato de numeros generadores",
+            "respaldo de medicion",
+        ),
+        "motivo": (
+            "Los números generadores documentan mediciones/cantidades que "
+            "respaldan la estimación; no constituyen el cuerpo económico "
+            "principal ni el resumen formal de la unidad."
+        ),
+    },
+}
+
+
+def _normalizar_texto_rol(valor: str) -> str:
+    texto = unicodedata.normalize(
+        "NFKD",
+        str(valor),
+    )
+    texto = "".join(
+        caracter
+        for caracter in texto
+        if not unicodedata.combining(caracter)
+    )
+    texto = texto.lower()
+    texto = re.sub(r"[^a-z0-9]+", " ", texto)
+    return re.sub(r"\s+", " ", texto).strip()
+
+
+def _estabilizar_roles_intrinsecos_soporte(
+    resultados: pd.DataFrame,
+    detalle_comparacion: pd.DataFrame,
+    meta_comparacion: dict,
+) -> tuple[pd.DataFrame, pd.DataFrame, dict]:
+    """
+    Estabiliza decisiones de la comparación conjunta usando la identidad
+    funcional ya disponible.
+
+    No sustituye la comparación multimodal y solo actúa cuando esta promovió
+    a representante/componente una pieza que presenta marcadores explícitos
+    de un rol intrínsecamente auxiliar. La primera regla controlada corresponde
+    a números generadores.
+    """
+    if resultados.empty:
+        return (
+            resultados.copy(),
+            detalle_comparacion.copy(),
+            dict(meta_comparacion),
+        )
+
+    salida = resultados.copy()
+    detalle = detalle_comparacion.copy()
+    meta = dict(meta_comparacion)
+
+    for columna, valor in (
+        ("Estabilización rol aplicada", False),
+        ("Regla estabilización rol", ""),
+        ("Evidencia estabilización rol", ""),
+    ):
+        if columna not in salida.columns:
+            salida[columna] = valor
+
+    estabilizados = 0
+
+    for indice, fila in salida.iterrows():
+        relacion = str(
+            fila.get("Relación comparativa", "")
+        ).strip()
+
+        if relacion not in {
+            "representante_unidad",
+            "componente_unidad",
+        }:
+            continue
+
+        texto = _normalizar_texto_rol(
+            " ".join(
+                [
+                    str(
+                        fila.get(
+                            "Título detectado",
+                            "",
+                        )
+                    ),
+                    str(
+                        fila.get(
+                            "Función identidad pura",
+                            "",
+                        )
+                    ),
+                    str(
+                        fila.get(
+                            "Acto identidad pura",
+                            "",
+                        )
+                    ),
+                    str(
+                        fila.get(
+                            "Evidencia comparativa",
+                            "",
+                        )
+                    ),
+                ]
+            )
+        )
+
+        regla_aplicada = None
+        marcador_aplicado = None
+
+        for regla_id, regla in (
+            REGLAS_ROL_INTRINSECO_SOPORTE.items()
+        ):
+            for marcador in regla["marcadores"]:
+                marcador_normalizado = (
+                    _normalizar_texto_rol(
+                        marcador
+                    )
+                )
+                if (
+                    marcador_normalizado
+                    and marcador_normalizado in texto
+                ):
+                    regla_aplicada = regla_id
+                    marcador_aplicado = marcador
+                    break
+
+            if regla_aplicada:
+                break
+
+        if not regla_aplicada:
+            continue
+
+        regla = REGLAS_ROL_INTRINSECO_SOPORTE[
+            regla_aplicada
+        ]
+        evidencia = (
+            f"Marcador funcional explícito: "
+            f"'{marcador_aplicado}'. {regla['motivo']}"
+        )
+
+        salida.at[
+            indice,
+            "Estabilización rol aplicada",
+        ] = True
+        salida.at[
+            indice,
+            "Regla estabilización rol",
+        ] = regla_aplicada
+        salida.at[
+            indice,
+            "Evidencia estabilización rol",
+        ] = evidencia
+        salida.at[
+            indice,
+            "Relación comparativa",
+        ] = "soporte"
+        salida.at[
+            indice,
+            "Relación con la unidad",
+        ] = "soporte"
+        salida.at[
+            indice,
+            "Coincide catálogo",
+        ] = False
+        salida.at[
+            indice,
+            "Concepto propuesto",
+        ] = ""
+        salida.at[
+            indice,
+            "Código de catálogo",
+        ] = ""
+        salida.at[
+            indice,
+            "Rol propuesto en la unidad",
+        ] = "Soporte / rol intrínseco estabilizado"
+
+        validacion_actual = str(
+            fila.get(
+                "Validación secundaria",
+                "",
+            )
+        ).strip()
+        salida.at[
+            indice,
+            "Validación secundaria",
+        ] = (
+            (
+                validacion_actual + " + "
+                if validacion_actual
+                else ""
+            )
+            + "Regla determinística de rol intrínseco"
+        )
+
+        evidencia_actual = str(
+            fila.get(
+                "Evidencia comparativa",
+                "",
+            )
+        ).strip()
+        salida.at[
+            indice,
+            "Evidencia comparativa",
+        ] = (
+            (
+                evidencia_actual + " | "
+                if evidencia_actual
+                else ""
+            )
+            + evidencia
+        )
+
+        if not detalle.empty:
+            mascara_detalle = (
+                detalle["Archivo"]
+                .astype(str)
+                .eq(str(fila.get("Archivo", "")))
+                & detalle["Título detectado"]
+                .astype(str)
+                .eq(
+                    str(
+                        fila.get(
+                            "Título detectado",
+                            "",
+                        )
+                    )
+                )
+            )
+            if mascara_detalle.any():
+                detalle.loc[
+                    mascara_detalle,
+                    "Relación comparativa",
+                ] = "soporte"
+                detalle.loc[
+                    mascara_detalle,
+                    "Evidencia comparativa",
+                ] = salida.at[
+                    indice,
+                    "Evidencia comparativa",
+                ]
+
+        estabilizados += 1
+
+    representantes = salida[
+        salida["Relación comparativa"]
+        .astype(str)
+        .eq("representante_unidad")
+    ]
+
+    if representantes.empty:
+        meta["Representante"] = ""
+    else:
+        meta["Representante"] = str(
+            representantes.iloc[0].get(
+                "Archivo",
+                "",
+            )
+        )
+
+    meta[
+        "Estabilizaciones rol soporte"
+    ] = estabilizados
+
+    if estabilizados:
+        evidencia_unidad = str(
+            meta.get(
+                "Evidencia unidad",
+                "",
+            )
+        ).strip()
+        nota = (
+            f"Se aplicaron {estabilizados} estabilización(es) "
+            "determinísticas de rol intrínseco de soporte."
+        )
+        meta["Evidencia unidad"] = (
+            (
+                evidencia_unidad + " | "
+                if evidencia_unidad
+                else ""
+            )
+            + nota
+        )
+
+    return salida, detalle, meta
 
 
 def listar_estimaciones_para_prueba(
@@ -908,6 +1203,16 @@ def ejecutar_est_completa_ficha_v2(
         tipo_unidad="Estimación",
     )
 
+    (
+        resultados_comparados,
+        detalle_comparacion,
+        meta_comparacion,
+    ) = _estabilizar_roles_intrinsecos_soporte(
+        resultados=resultados_comparados,
+        detalle_comparacion=detalle_comparacion,
+        meta_comparacion=meta_comparacion,
+    )
+
     resultados_finales, resumen_grupos = (
         agrupar_resultados_unidad(
             resultados=resultados_comparados,
@@ -1047,6 +1352,13 @@ def ejecutar_est_completa_ficha_v2(
                 "Estado",
                 "",
             )
+        ),
+        "estabilizaciones_rol_soporte": int(
+            meta_comparacion.get(
+                "Estabilizaciones rol soporte",
+                0,
+            )
+            or 0
         ),
     }
 
