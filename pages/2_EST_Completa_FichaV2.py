@@ -12,7 +12,7 @@ from services.openai_multimodal_service import (
 from ui.common import mostrar_encabezado, requerir_expediente
 
 
-RESULTADO_EST_V2_SCHEMA_VERSION = 3
+RESULTADO_EST_V2_SCHEMA_VERSION = 4
 
 
 mostrar_encabezado(
@@ -411,6 +411,9 @@ if (
             "Código JEV",
             "Confianza JEV (%)",
             "Regla relación interna",
+            "Validación propósito sensible",
+            "Regla propósito sensible",
+            "Evidencia propósito sensible",
             "Validación estricta JEV",
             "Confianza estricta JEV (%)",
             "Refuerzo estructural aplicado",
