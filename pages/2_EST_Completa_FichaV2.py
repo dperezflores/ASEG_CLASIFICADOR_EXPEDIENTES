@@ -12,7 +12,7 @@ from services.openai_multimodal_service import (
 from ui.common import mostrar_encabezado, requerir_expediente
 
 
-RESULTADO_EST_V2_SCHEMA_VERSION = 5
+RESULTADO_EST_V2_SCHEMA_VERSION = 6
 
 
 mostrar_encabezado(
@@ -418,6 +418,11 @@ if (
             "Archivo",
             "ID lógico",
             "Título detectado",
+            "Concepto JEV original",
+            "Código JEV original",
+            "Jerarquía contexto unidad aplicada",
+            "Regla jerarquía unidad",
+            "Evidencia jerarquía unidad",
             "Concepto JEV",
             "Código JEV",
             "Confianza JEV (%)",
