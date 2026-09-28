@@ -264,7 +264,7 @@ def ejecutar_diagnostico_integral_v2(
         relaciones,
         marcadores,
         resumen_ficha,
-        perfiles_crudos,
+        _perfiles_crudos,
     ) = analizar_muestra_fichas_documentales(
         contenido_zip=contenido_zip,
         inventario=inventario,
@@ -778,7 +778,6 @@ def ejecutar_diagnostico_integral_v2(
         "registros": registros,
         "relaciones": relaciones,
         "marcadores": marcadores,
-        "perfiles_crudos": perfiles_crudos,
         "detalle_jev": detalle_jev,
         "resumen_jev": resumen_jev,
         "resultados_logicos": resultados_logicos,
