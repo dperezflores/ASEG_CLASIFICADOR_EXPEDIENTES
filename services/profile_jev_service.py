@@ -19,6 +19,7 @@ from services.structural_analysis_service import (
 
 
 MAX_CARACTERES_FICHA_JEV = 18_000
+PIPELINE_VERSION_FICHA_JEV = 5
 
 UMBRAL_CANDIDATO_REFUERZO_ESTRUCTURAL = 95.0
 UMBRAL_RELACION_REFUERZO_ESTRUCTURAL = 90.0
@@ -1488,7 +1489,7 @@ def clasificar_fichas_v2_con_jev(
     )
 
     resumen = {
-        "pipeline_version": 5,
+        "pipeline_version": PIPELINE_VERSION_FICHA_JEV,
         "documentos_logicos_evaluados": len(detalle),
         "jerarquias_unidad_aplicadas": int(
             detalle[
